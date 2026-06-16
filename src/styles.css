@@ -1,0 +1,384 @@
+:root {
+  color-scheme: light;
+  font-family: 'ING Me', Inter, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+  background: #f5f7fa;
+  color: #1a1a1a;
+
+  /* =========================
+   PRIMARY (ING Brand)
+   ========================= */
+  --ing-orange: #ff6200;
+  --ing-orange-dark: #e55500;
+  --ing-orange-light: #ff8a33;
+
+  /* =========================
+   SECONDARY COLORS (Accent)
+   ========================= */
+  --accent-fuchsia: #d81b60;
+  --accent-purple: #6a1b9a;
+  --accent-indigo: #3949ab;
+  --accent-blue: #1e88e5;
+  --accent-teal: #00897b;
+  --accent-green: #43a047;
+  --accent-lime: #c0ca33;
+  --accent-yellow: #fdd835;
+  --accent-amber: #ffb300;
+  --accent-red: #e53935;
+
+  /* Softer tints */
+  --accent-fuchsia-light: #f8bbd0;
+  --accent-blue-light: #bbdefb;
+  --accent-teal-light: #b2dfdb;
+  --accent-green-light: #c8e6c9;
+
+  /* =========================
+   ING Secondary Branding
+   ========================= */
+  --ing-blue: #003a8f;
+  --ing-light-blue: #e6eef8;
+
+  /* =========================
+   NEUTRALS
+   ========================= */
+  --ing-black: #1a1a1a;
+  --ing-dark-gray: #4d4d4d;
+  --ing-medium-gray: #999999;
+  --ing-light-gray: #f5f5f5;
+  --ing-white: #ffffff;
+
+  /* =========================
+   STATUS COLORS
+   ========================= */
+  --ing-success: #2e7d32;
+  --ing-warning: #f9a825;
+  --ing-error: #c62828;
+}
+
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: linear-gradient(135deg, #f5f7fa 0%, #eef1f5 100%);
+}
+
+.app-root {
+  padding: 16px;
+}
+
+.app-header {
+  margin-bottom: 12px;
+}
+
+.app-header h1 {
+  margin: 0;
+  font-size: 1.25rem;
+  color: var(--ing-black);
+}
+
+.app-header p {
+  margin-top: 8px;
+  margin-bottom: 0;
+  color: var(--ing-dark-gray);
+}
+
+.dataset-controls {
+  margin-top: 10px;
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.dataset-controls label {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  color: var(--ing-dark-gray);
+}
+
+.dataset-controls select,
+.dataset-controls input[type='file'],
+.toolbar select {
+  border: 1px solid #d0d7e0;
+  background: var(--ing-white);
+  color: var(--ing-black);
+  border-radius: 8px;
+  padding: 5px 7px;
+  font-size: 0.85rem;
+}
+
+.toolbar input[type='text'] {
+  border: 1px solid #d0d7e0;
+  background: var(--ing-white);
+  color: var(--ing-black);
+  border-radius: 8px;
+  padding: 5px 7px;
+  min-width: 180px;
+  font-size: 0.85rem;
+}
+
+.search-stats {
+  color: var(--ing-dark-gray);
+  font-size: 0.82rem;
+}
+
+.dataset-stats {
+  color: var(--ing-dark-gray);
+  font-size: 0.86rem;
+}
+
+.graph-shell {
+  border: 1px solid #d0d7e0;
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--ing-white);
+}
+
+.toolbar {
+  display: flex;
+  gap: 8px;
+  padding: 10px;
+  border-bottom: 1px solid #e0e4eb;
+  background: #fafbfc;
+  align-items: center;
+}
+
+.toolbar label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ing-dark-gray);
+  font-size: 0.85rem;
+}
+
+.toolbar button {
+  border: 1px solid #d0d7e0;
+  background: var(--ing-white);
+  color: var(--ing-dark-gray);
+  border-radius: 8px;
+  padding: 6px 10px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  transition: all 0.2s ease;
+}
+
+.toolbar button:hover {
+  background: var(--ing-light-gray);
+  border-color: #bcc4cf;
+}
+
+.selected-label {
+  margin-left: auto;
+  color: var(--ing-dark-gray);
+  font-size: 0.85rem;
+}
+
+.render-stats {
+  color: var(--ing-dark-gray);
+  font-size: 0.82rem;
+}
+
+.graph-stage {
+  position: relative;
+  overflow: hidden;
+  background: var(--ing-white);
+}
+
+.edge-layer,
+.node-layer {
+  position: absolute;
+  inset: 0;
+  transform-origin: 0 0;
+}
+
+.edge {
+  fill: none;
+  stroke-width: 2;
+  stroke: var(--accent-blue);
+  opacity: 0.8;
+  pointer-events: none;
+}
+
+.edge-calls {
+  stroke: var(--accent-teal);
+  stroke-dasharray: 4 3;
+}
+
+.edge-reads {
+  stroke: var(--accent-blue);
+}
+
+.edge-writes {
+  stroke: var(--ing-orange);
+}
+
+.edge-flow {
+  stroke: var(--accent-blue);
+}
+
+.edge-flow-outgoing {
+  stroke: var(--accent-purple);
+}
+
+.edge-flow-incoming {
+  stroke: var(--accent-fuchsia);
+}
+
+.edge-flow_transitive {
+  stroke: var(--accent-red);
+  stroke-dasharray: 3 3;
+  opacity: 0.6;
+}
+
+.edge-dim {
+  opacity: 0.15;
+}
+
+.edge-direct {
+  opacity: 1;
+  stroke-width: 2.6;
+}
+
+.edge-label {
+  font-size: 11px;
+  font-weight: 600;
+  pointer-events: none;
+  user-select: none;
+  fill: var(--ing-white);
+  paint-order: stroke;
+}
+
+.edge-label-group {
+  pointer-events: none;
+  z-index: 10;
+}
+
+.edge-label-bg {
+  fill: var(--accent-blue);
+  pointer-events: none;
+}
+
+.edge-label-bg.edge-calls {
+  fill: var(--accent-teal);
+}
+
+.edge-label-bg.edge-reads {
+  fill: var(--accent-blue);
+}
+
+.edge-label-bg.edge-writes {
+  fill: var(--ing-orange);
+}
+
+.edge-label-bg.edge-flow {
+  fill: var(--accent-blue);
+}
+
+.edge-label-bg.edge-flow-outgoing {
+  fill: var(--accent-purple);
+}
+
+.edge-label-bg.edge-flow-incoming {
+  fill: var(--accent-fuchsia);
+}
+
+.edge-label-bg.edge-flow_transitive {
+  fill: var(--accent-red);
+}
+
+.node-layer {
+  pointer-events: none;
+}
+
+.node-card {
+  pointer-events: auto;
+  position: absolute;
+  left: 0;
+  top: 0;
+  min-width: 170px;
+  max-width: 230px;
+  text-align: left;
+  border: 2px solid var(--accent-indigo);
+  border-radius: 10px;
+  background: linear-gradient(135deg, #ffffff 0%, #f8fbff 100%);
+  color: var(--ing-black);
+  transform: translate(0, 0);
+  padding: 8px 10px;
+  box-shadow: 0 4px 12px rgba(57, 73, 171, 0.12);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.node-card:hover {
+  box-shadow: 0 6px 16px rgba(57, 73, 171, 0.18);
+}
+
+.node-title {
+  font-weight: 600;
+  font-size: 0.86rem;
+  color: var(--ing-black);
+}
+
+.node-meta {
+  margin-top: 5px;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 0.72rem;
+  color: var(--ing-dark-gray);
+}
+
+.node-card.cluster {
+  border-style: dashed;
+  border-color: var(--accent-indigo);
+  background: linear-gradient(135deg, #f0f4ff 0%, #e8f0ff 100%);
+}
+
+.node-card.table {
+  border-color: var(--accent-indigo);
+  cursor: grab;
+}
+
+.node-card.table:active {
+  cursor: grabbing;
+}
+
+.node-card.transformation {
+  border-color: #6a4c27;
+}
+
+.node-card.application {
+  border-color: var(--accent-indigo);
+}
+
+.node-selected {
+  outline: 2px solid var(--ing-orange);
+  outline-offset: 2px;
+  z-index: 3;
+}
+
+.node-pivot {
+  outline: 3px solid var(--ing-orange);
+  outline-offset: 2px;
+  z-index: 4;
+  box-shadow: 0 0 0 4px rgba(255, 98, 0, 0.15);
+}
+
+.node-neighbor {
+  border-color: var(--accent-blue);
+  box-shadow: 0 4px 12px rgba(30, 136, 229, 0.18);
+}
+
+.node-dragging {
+  z-index: 5;
+  outline: 3px solid var(--accent-teal);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 4px rgba(0, 137, 123, 0.1);
+}
+
+.node-dim {
+  opacity: 0.25;
+}

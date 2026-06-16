@@ -1,0 +1,29 @@
+{
+  "name": "lineage-exploring-ui",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "check:data": "node ./scripts/check-data.mjs",
+    "gen:buss": "python3 ./scripts/generate_buss_graph.py",
+    "test:tableflow": "tsx ./src/utils/tableFlow.test.ts"
+  },
+  "dependencies": {
+    "d3": "^7.9.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/d3": "^7.4.3",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "tsx": "^4.20.3",
+    "typescript": "^5.7.2",
+    "vite": "^5.4.11"
+  }
+}
+
