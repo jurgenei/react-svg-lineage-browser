@@ -31,7 +31,6 @@ export default function App() {
     <main className="app-root">
       <header className="app-header">
         <h1>Lineage Semantic Explorer</h1>
-        <p>Load a plain JSON graph file with shape {`{ nodes: [], edges: [] }`}.</p>
         <div className="dataset-controls">
           <label>
             Load graph JSON:

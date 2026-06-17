@@ -1,0 +1,361 @@
+{
+  "schema": "example",
+  "meta": {
+    "tableCount": 25,
+    "edgeCount": 25
+  },
+  "nodes": [
+    {
+      "id": "n1",
+      "label": "n1",
+      "type": "table",
+      "xppr": 0.007659468372533326
+    },
+    {
+      "id": "n2",
+      "label": "n2",
+      "type": "table",
+      "xppr": 0.01417033392569566
+    },
+    {
+      "id": "n3",
+      "label": "n3",
+      "type": "table",
+      "xppr": 0.019704504359360386
+    },
+    {
+      "id": "n4",
+      "label": "n4",
+      "type": "table",
+      "xppr": 0.024408483099878375
+    },
+    {
+      "id": "n5",
+      "label": "n5",
+      "type": "table",
+      "xppr": 0.049887603294308455
+    },
+    {
+      "id": "n6",
+      "label": "n6",
+      "type": "table",
+      "xppr": 0.05006315961106297
+    },
+    {
+      "id": "n7",
+      "label": "n7",
+      "type": "table",
+      "xppr": 0.05021179354529913
+    },
+    {
+      "id": "n8",
+      "label": "n8",
+      "type": "table",
+      "xppr": 0.05033993269483107
+    },
+    {
+      "id": "n9",
+      "label": "n9",
+      "type": "table",
+      "xppr": 0.050450840133058485
+    },
+    {
+      "id": "n10",
+      "label": "n10",
+      "type": "table",
+      "xppr": 0.050542936292052115
+    },
+    {
+      "id": "n11",
+      "label": "n11",
+      "type": "table",
+      "xppr": 0.029140273492935385
+    },
+    {
+      "id": "n12",
+      "label": "n12",
+      "type": "table",
+      "xppr": 0.0324283584314205
+    },
+    {
+      "id": "n13",
+      "label": "n13",
+      "type": "table",
+      "xppr": 0.03522263182781509
+    },
+    {
+      "id": "n14",
+      "label": "n14",
+      "type": "table",
+      "xppr": 0.037598901326460876
+    },
+    {
+      "id": "n15",
+      "label": "n15",
+      "type": "table",
+      "xppr": 0.039620735422750505
+    },
+    {
+      "id": "n16",
+      "label": "n16",
+      "type": "table",
+      "xppr": 0.04133697196697842
+    },
+    {
+      "id": "n17",
+      "label": "n17",
+      "type": "table",
+      "xppr": 0.042795662502648206
+    },
+    {
+      "id": "n18",
+      "label": "n18",
+      "type": "table",
+      "xppr": 0.04403544151829451
+    },
+    {
+      "id": "n19",
+      "label": "n19",
+      "type": "table",
+      "xppr": 0.0450880986959567
+    },
+    {
+      "id": "n20",
+      "label": "n20",
+      "type": "table",
+      "xppr": 0.045983868484764955
+    },
+    {
+      "id": "n21",
+      "label": "n21",
+      "type": "table",
+      "xppr": 0.04674942909733429
+    },
+    {
+      "id": "n22",
+      "label": "n22",
+      "type": "table",
+      "xppr": 0.0473954891144804
+    },
+    {
+      "id": "n23",
+      "label": "n23",
+      "type": "table",
+      "xppr": 0.04794456912664459
+    },
+    {
+      "id": "n24",
+      "label": "n24",
+      "type": "table",
+      "xppr": 0.04841252370752933
+    },
+    {
+      "id": "n25",
+      "label": "n25",
+      "type": "table",
+      "xppr": 0.04880798995590601
+    }
+  ],
+  "edges": [
+    {
+      "size": 1,
+      "source": "n1",
+      "target": "n2",
+      "procedure": "p",
+      "label": "p",
+      "id": "p.n1-n2"
+    },
+    {
+      "size": 1,
+      "source": "n2",
+      "target": "n3",
+      "procedure": "p",
+      "label": "p",
+      "id": "p.n2-n3"
+    },
+    {
+      "size": 1,
+      "source": "n3",
+      "target": "n4",
+      "procedure": "p",
+      "label": "p",
+      "id": "p.n3-n4"
+    },
+    {
+      "size": 1,
+      "source": "n4",
+      "target": "n5",
+      "procedure": "p",
+      "label": "p",
+      "id": "p.n4-n5"
+    },
+    {
+      "size": 1,
+      "source": "n5",
+      "target": "n6",
+      "procedure": "p",
+      "label": "p",
+      "id": "p.n5-n6"
+    },
+    {
+      "size": 1,
+      "source": "n6",
+      "target": "n7",
+      "procedure": "p",
+      "label": "p",
+      "id": "p.n6-n7"
+    },
+    {
+      "size": 1,
+      "source": "n7",
+      "target": "n8",
+      "procedure": "p",
+      "label": "p",
+      "id": "p.n7-n8"
+    },
+    {
+      "size": 1,
+      "source": "n8",
+      "target": "n9",
+      "procedure": "p",
+      "label": "p",
+      "id": "p.n8-n9"
+    },
+    {
+      "size": 1,
+      "source": "n9",
+      "target": "n10",
+      "procedure": "p",
+      "label": "p",
+      "id": "p.n9-n10"
+    },
+    {
+      "size": 1,
+      "source": "n10",
+      "target": "n11",
+      "procedure": "p",
+      "label": "p",
+      "id": "p.n10-n11"
+    },
+    {
+      "size": 1,
+      "source": "n11",
+      "target": "n12",
+      "procedure": "p",
+      "label": "p",
+      "id": "p.n11-n12"
+    },
+    {
+      "size": 1,
+      "source": "n12",
+      "target": "n13",
+      "procedure": "p",
+      "label": "p",
+      "id": "p.n12-n13"
+    },
+    {
+      "size": 1,
+      "source": "n13",
+      "target": "n14",
+      "procedure": "p",
+      "label": "p",
+      "id": "p.n13-n14"
+    },
+    {
+      "size": 1,
+      "source": "n14",
+      "target": "n15",
+      "procedure": "p",
+      "label": "p",
+      "id": "p.n14-n15"
+    },
+    {
+      "size": 1,
+      "source": "n15",
+      "target": "n16",
+      "procedure": "p",
+      "label": "p",
+      "id": "p.n15-n16"
+    },
+    {
+      "size": 1,
+      "source": "n16",
+      "target": "n17",
+      "procedure": "p",
+      "label": "p",
+      "id": "p.n16-n17"
+    },
+    {
+      "size": 1,
+      "source": "n17",
+      "target": "n18",
+      "procedure": "p",
+      "label": "p",
+      "id": "p.n17-n18"
+    },
+    {
+      "size": 1,
+      "source": "n18",
+      "target": "n19",
+      "procedure": "p",
+      "label": "p",
+      "id": "p.n18-n19"
+    },
+    {
+      "size": 1,
+      "source": "n19",
+      "target": "n20",
+      "procedure": "p",
+      "label": "p",
+      "id": "p.n19-n20"
+    },
+    {
+      "size": 1,
+      "source": "n20",
+      "target": "n21",
+      "procedure": "p",
+      "label": "p",
+      "id": "p.n20-n21"
+    },
+    {
+      "size": 1,
+      "source": "n21",
+      "target": "n22",
+      "procedure": "p",
+      "label": "p",
+      "id": "p.n21-n22"
+    },
+    {
+      "size": 1,
+      "source": "n22",
+      "target": "n23",
+      "procedure": "p",
+      "label": "p",
+      "id": "p.n22-n23"
+    },
+    {
+      "size": 1,
+      "source": "n23",
+      "target": "n24",
+      "procedure": "p",
+      "label": "p",
+      "id": "p.n23-n24"
+    },
+    {
+      "size": 1,
+      "source": "n24",
+      "target": "n25",
+      "procedure": "p",
+      "label": "p",
+      "id": "p.n24-n25"
+    },
+    {
+      "size": 1,
+      "source": "n10",
+      "target": "n5",
+      "procedure": "cycle",
+      "label": "cycle",
+      "id": "cycle.n10-n5"
+    }
+  ]
+}

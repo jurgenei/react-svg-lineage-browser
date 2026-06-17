@@ -19,6 +19,7 @@ export function useForceLayout(
   const seededNodes = useMemo(() => {
     const clone = nodes.map((node) => ({ ...node }));
     const depth = computeDepth(clone, links);
+    const xpprDomain = computeXpprDomain(clone);
 
     for (const node of clone) {
       const nodeDepth = depth.get(node.id) ?? -1;
@@ -33,7 +34,8 @@ export function useForceLayout(
             ? width * 0.82
             : width * 0.5;
 
-      node.x = Number.isFinite(xByDepth) ? 0.6 * xByDepth + 0.4 * xByDirectionality : xByDirectionality;
+      const fallbackX = Number.isFinite(xByDepth) ? 0.6 * xByDepth + 0.4 * xByDirectionality : xByDirectionality;
+      node.x = getXpprX(node, width, xpprDomain) ?? fallbackX;
       const groupIndex = Math.max(0, groupOrder.indexOf(node.group));
       const bandHeight = Math.max(40, height / Math.max(2, groupOrder.length + 1));
       node.y = bandHeight * (groupIndex + 1);
@@ -64,6 +66,8 @@ export function useForceLayout(
       })
       .strength(0.18);
 
+    const xpprDomain = computeXpprDomain(seededNodes);
+
     const simulation = forceSimulation(seededNodes)
       .force('charge', forceManyBody().strength(chargeStrength))
       .force('link', linkForce)
@@ -71,6 +75,11 @@ export function useForceLayout(
       .force(
         'x',
         forceX<SimNode>((node) => {
+          const xpprX = getXpprX(node, width, xpprDomain);
+          if (xpprX !== undefined) {
+            return xpprX;
+          }
+
           const depthWeight = node.depth !== undefined && node.depth >= 0 ? node.depth / Math.max(1, maxDepthFromNodes(seededNodes)) : 0.5;
           const depthX = 70 + depthWeight * Math.max(120, width - 140);
           const directionalX =
@@ -178,4 +187,47 @@ function maxDepthFromNodes(nodes: SimNode[]) {
     max = Math.max(max, node.depth ?? 0);
   }
   return max;
+}
+
+type XpprNode = { xppr?: number | string };
+type XpprDomain = { min: number; max: number };
+
+function computeXpprDomain(nodes: SimNode[]): XpprDomain | undefined {
+  let min = Number.POSITIVE_INFINITY;
+  let max = Number.NEGATIVE_INFINITY;
+
+  for (const node of nodes) {
+    const value = Number((node as SimNode & XpprNode).xppr);
+    if (!Number.isFinite(value)) {
+      continue;
+    }
+    min = Math.min(min, value);
+    max = Math.max(max, value);
+  }
+
+  if (!Number.isFinite(min) || !Number.isFinite(max)) {
+    return undefined;
+  }
+
+  return { min, max };
+}
+
+function getXpprX(node: SimNode, width: number, domain: XpprDomain | undefined): number | undefined {
+  if (!domain) {
+    return undefined;
+  }
+
+  const value = Number((node as SimNode & XpprNode).xppr);
+  if (!Number.isFinite(value)) {
+    return undefined;
+  }
+
+  const range = domain.max - domain.min;
+  const normalized = range > 0 ? (value - domain.min) / range : 0.5;
+  const clamped = Math.max(0, Math.min(1, normalized));
+
+  const leftPadding = 70;
+  const rightPadding = 70;
+  const drawableWidth = Math.max(120, width - leftPadding - rightPadding);
+  return leftPadding + clamped * drawableWidth;
 }

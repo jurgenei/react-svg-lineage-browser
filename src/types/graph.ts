@@ -7,6 +7,7 @@ export interface GraphNode {
   label: string;
   group: string;
   directionality: Directionality;
+  xppr?: number | string;
   metadata?: Record<string, string | number | boolean | null | undefined>;
 }
 
@@ -46,4 +47,3 @@ export interface SimLink {
   procedures?: string[];
   weight?: number;
 }
-
