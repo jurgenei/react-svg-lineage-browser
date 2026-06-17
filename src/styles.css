@@ -194,6 +194,10 @@ body {
   transform-origin: 0 0;
 }
 
+.edge-layer-highlight {
+  pointer-events: none;
+}
+
 .edge {
   fill: none;
   stroke-width: 2;
@@ -380,5 +384,7 @@ body {
 }
 
 .node-dim {
-  opacity: 0.25;
+  /* Keep cards opaque so bottom-layer edges do not bleed through in focus mode. */
+  opacity: 1;
+  filter: saturate(0.45) brightness(0.94);
 }

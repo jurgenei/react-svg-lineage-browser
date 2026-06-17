@@ -1,5 +1,5 @@
-import sampleData from '../data/sample-lineage.json';
-import bussData from '../data/buss-preprocessor.graph.json';
+import sampleData from '../data/sample-25-n1-85.json';
+import bussData from '../data/sample-25-n1-90.json';
 import type { GraphData } from '../types/graph';
 import { buildTableFlowGraph } from './tableFlow';
 

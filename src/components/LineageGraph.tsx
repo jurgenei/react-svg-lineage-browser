@@ -10,20 +10,36 @@ interface LineageGraphProps {
   height?: number;
 }
 
+interface EdgeRenderItem {
+  key: string;
+  edgeKey: string;
+  link: SimLink;
+  source: SimNode;
+  target: SimNode;
+  parallelIndex: number;
+  parallelTotal: number;
+  strokeWidth: number;
+  dirClass: string;
+  faded: boolean;
+  isDirect: boolean;
+  showDirectStyling: boolean;
+}
+
 export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphProps) {
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => new Set(defaultCollapsedGroups(data)));
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [focusMode, setFocusMode] = useState(false);
+  const [showDirectEdges, setShowDirectEdges] = useState(false);
   const [edgeMode, setEdgeMode] = useState<'none' | 'soft' | 'grouped'>('soft');
   const [transform, setTransform] = useState<ZoomTransform>(zoomIdentity);
   const [searchTerm, setSearchTerm] = useState('');
+  const [xpprGamma, setXpprGamma] = useState(2);
   const [tableMatches, setTableMatches] = useState<string[]>([]);
   const [tableMatchIndex, setTableMatchIndex] = useState(-1);
   const [pendingFocusId, setPendingFocusId] = useState<string | null>(null);
   const [manualPositions, setManualPositions] = useState<Map<string, { x: number; y: number }>>(new Map());
   const [draggingNodeId, setDraggingNodeId] = useState<string | null>(null);
-  const [hoveredEdgeKey, setHoveredEdgeKey] = useState<string | null>(null);
 
   const svgRef = useRef<SVGSVGElement | null>(null);
   const stageRef = useRef<HTMLDivElement | null>(null);
@@ -43,7 +59,7 @@ export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphP
   }, [data.nodes]);
 
   const visibleGraph = useMemo(() => buildVisibleGraph(data, collapsedGroups), [data, collapsedGroups]);
-  const { nodes, links } = useForceLayout(visibleGraph.nodes, visibleGraph.links, width, height, groupOrder);
+  const { nodes, links } = useForceLayout(visibleGraph.nodes, visibleGraph.links, width, height, groupOrder, xpprGamma);
 
   const nodesWithStacks = useMemo(() => placeUnconnectedNodes(nodes, links, width, height), [nodes, links, width, height]);
 
@@ -133,11 +149,10 @@ export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphP
       grouped.set(key, arr);
     }
 
-    const info = new Map<string, { index: number; total: number }>();
-    for (const [key, arr] of grouped.entries()) {
+    const info = new Map<SimLink, { index: number; total: number }>();
+    for (const [, arr] of grouped.entries()) {
       arr.forEach((link, index) => {
-        const id = link.edgeKey ?? `${key}|${index}`;
-        info.set(id, { index, total: arr.length });
+        info.set(link, { index, total: arr.length });
       });
     }
     return info;
@@ -170,6 +185,113 @@ export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphP
     }
     return highlightState?.related ?? null;
   }, [focusMode, selectedNodeId, hoveredNodeId, highlightState]);
+
+  const highlightedNodeIds = useMemo(() => {
+    if (focusMode) {
+      return highlightState?.related ?? new Set<string>();
+    }
+
+    const highlighted = new Set<string>();
+    if (!selectedNodeId) {
+      return highlighted;
+    }
+
+    highlighted.add(selectedNodeId);
+    for (const link of links) {
+      const src = typeof link.source === 'string' ? link.source : link.source.id;
+      const dst = typeof link.target === 'string' ? link.target : link.target.id;
+      if (src === selectedNodeId || dst === selectedNodeId) {
+        highlighted.add(src);
+        highlighted.add(dst);
+      }
+    }
+
+    return highlighted;
+  }, [focusMode, highlightState, selectedNodeId, links]);
+
+  const highlightedRenderNodes = useMemo(
+    () => renderNodes.filter((node) => highlightedNodeIds.has(node.id)),
+    [renderNodes, highlightedNodeIds]
+  );
+
+  const unselectedRenderNodes = useMemo(
+    () => renderNodes.filter((node) => !highlightedNodeIds.has(node.id)),
+    [renderNodes, highlightedNodeIds]
+  );
+
+  const edgeRenderItems = useMemo(() => {
+    const items: EdgeRenderItem[] = [];
+
+    renderLinks.forEach((link, idx) => {
+      const sourceId = typeof link.source === 'string' ? link.source : link.source.id;
+      const targetId = typeof link.target === 'string' ? link.target : link.target.id;
+      const source = nodeMap.get(sourceId);
+      const target = nodeMap.get(targetId);
+      if (!source || !target) {
+        return;
+      }
+
+      const isDirect =
+        highlightState?.directLinks.has(`${source.id}->${target.id}`) ||
+        highlightState?.directLinks.has(`${target.id}->${source.id}`) ||
+        false;
+      const showDirectStyling = showDirectEdges && isDirect;
+      const faded = dimSet ? !(dimSet.has(source.id) && dimSet.has(target.id)) : false;
+      let dirClass = '';
+      if (pivotNodeId && isDirect) {
+        if (source.id === pivotNodeId) {
+          dirClass = 'edge-flow-outgoing';
+        } else if (target.id === pivotNodeId) {
+          dirClass = 'edge-flow-incoming';
+        }
+      }
+
+      const parallel = linkParallelInfo.get(link) ?? { index: 0, total: 1 };
+      const edgeKey = link.edgeKey ?? `${source.id}|${target.id}|${idx}`;
+      const key = `${source.id}:${target.id}:${idx}`;
+      const strokeWidth = Math.min(8, 1.5 + Math.log2((link.weight ?? 1) + 1) * 1.7);
+
+       items.push({
+         key,
+         edgeKey,
+         link,
+         source,
+         target,
+         parallelIndex: parallel.index,
+         parallelTotal: parallel.total,
+         strokeWidth,
+         dirClass,
+         faded,
+         isDirect,
+         showDirectStyling
+       });
+    });
+
+    return items;
+  }, [renderLinks, nodeMap, highlightState, dimSet, pivotNodeId, linkParallelInfo]);
+
+  const highlightedEdgeItems = useMemo(
+    () => edgeRenderItems.filter((item) => highlightedNodeIds.has(item.source.id) && highlightedNodeIds.has(item.target.id)),
+    [edgeRenderItems, highlightedNodeIds]
+  );
+
+  const displayedHighlightedEdgeItems = useMemo(
+    () => highlightedEdgeItems.filter((item) => showDirectEdges || !item.isDirect),
+    [highlightedEdgeItems, showDirectEdges]
+  );
+
+  const nonHighlightedEdgeItems = useMemo(
+    () => edgeRenderItems.filter((item) => !(highlightedNodeIds.has(item.source.id) && highlightedNodeIds.has(item.target.id))),
+    [edgeRenderItems, highlightedNodeIds]
+  );
+
+  const displayedNonHighlightedEdgeItems = useMemo(() => {
+    if (showDirectEdges) {
+      return nonHighlightedEdgeItems;
+    }
+    const directItems = highlightedEdgeItems.filter((item) => item.isDirect);
+    return nonHighlightedEdgeItems.concat(directItems);
+  }, [showDirectEdges, nonHighlightedEdgeItems, highlightedEdgeItems]);
 
   useEffect(() => {
     if (!svgRef.current) {
@@ -234,6 +356,7 @@ export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphP
       window.removeEventListener('pointerup', handlePointerUp);
     };
   }, [transform]);
+
 
   useEffect(() => {
     if (!pendingFocusId) {
@@ -315,12 +438,111 @@ export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphP
       .call(zoomBehaviorRef.current.transform as never, targetTransform);
   }
 
+  function renderNodeCard(node: SimNode) {
+    const faded = dimSet ? !dimSet.has(node.id) : false;
+    const isPivot = pivotNodeId === node.id;
+    const isNeighbor = Boolean(dimSet?.has(node.id) && !isPivot);
+    return (
+      <button
+        type="button"
+        key={node.id}
+        className={`node-card ${node.type} ${faded ? 'node-dim' : ''} ${selectedNodeId === node.id ? 'node-selected' : ''} ${isPivot ? 'node-pivot' : ''} ${isNeighbor ? 'node-neighbor' : ''} ${draggingNodeId === node.id ? 'node-dragging' : ''}`}
+        style={{ transform: `translate(${node.x}px, ${node.y}px)` }}
+        onPointerDown={(event) => {
+          if (node.type !== 'table' || !stageRef.current) {
+            return;
+          }
+          event.preventDefault();
+          event.stopPropagation();
+          const rect = stageRef.current.getBoundingClientRect();
+          const worldX = (event.clientX - rect.left - transform.x) / transform.k;
+          const worldY = (event.clientY - rect.top - transform.y) / transform.k;
+          dragStateRef.current = {
+            id: node.id,
+            offsetX: worldX - node.x,
+            offsetY: worldY - node.y
+          };
+          setDraggingNodeId(node.id);
+        }}
+        onMouseEnter={() => setHoveredNodeId(node.id)}
+        onMouseLeave={() => setHoveredNodeId((id) => (id === node.id ? null : id))}
+        onClick={() => {
+          if (node.isCluster) {
+            setCollapsedGroups((prev) => {
+              const next = new Set(prev);
+              if (next.has(node.group)) {
+                next.delete(node.group);
+              } else {
+                next.add(node.group);
+              }
+              return next;
+            });
+            return;
+          }
+          setSelectedNodeId((prev) => (prev === node.id ? null : node.id));
+        }}
+      >
+        <div className="node-title">{node.label}</div>
+        {node.childCount ? <div className="node-meta"><span>{node.childCount} nodes</span></div> : null}
+      </button>
+    );
+  }
+
+  function renderEdge(item: EdgeRenderItem, showLabel: boolean) {
+    const sx = item.source.x + 90;
+    const sy = item.source.y + 24;
+    const tx = item.target.x;
+    const ty = item.target.y + 24;
+    const labelX = (sx + tx) / 2;
+    const labelY = (sy + ty) / 2;
+    const labelWidth = item.link.label ? Math.max(item.link.label.length * 6.2 + 12, 36) : 36;
+
+    return (
+      <g key={item.key}>
+        <path
+          d={edgePath(item.source, item.target, edgeMode, groupCenter, item.parallelIndex, item.parallelTotal)}
+          className={`edge edge-${item.link.type.toLowerCase()} ${item.dirClass} ${item.faded ? 'edge-dim' : ''} ${item.showDirectStyling ? 'edge-direct' : ''}`}
+          style={{ strokeWidth: item.strokeWidth }}
+          markerEnd="url(#arrow-end)"
+        >
+          <title>{`${item.link.label ?? item.link.type} (${item.link.weight ?? 1})`}</title>
+        </path>
+        {showLabel && item.link.label && (
+          <g className="edge-label-group">
+            <rect
+              x={labelX - labelWidth / 2}
+              y={labelY - 8}
+              width={labelWidth}
+              height={16}
+              rx="4"
+              ry="4"
+              className={`edge-label-bg edge-${item.link.type.toLowerCase()} ${item.dirClass}`}
+            />
+            <text
+              x={labelX}
+              y={labelY}
+              textAnchor="middle"
+              dominantBaseline="middle"
+              className="edge-label"
+            >
+              {item.link.label}
+            </text>
+          </g>
+        )}
+      </g>
+    );
+  }
+
   return (
     <div className="graph-shell">
       <div className="toolbar">
         <button onClick={() => setCollapsedGroups(new Set(groupOrder))}>Collapse all groups</button>
         <button onClick={() => setCollapsedGroups(new Set())}>Expand all groups</button>
         <button onClick={() => setFocusMode((v) => !v)}>{focusMode ? 'Disable focus mode' : 'Enable focus mode'}</button>
+        <label style={{ opacity: focusMode ? 1 : 0.5, pointerEvents: focusMode ? 'auto' : 'none' }}>
+          <input type="checkbox" checked={showDirectEdges} onChange={(e) => setShowDirectEdges(e.target.checked)} disabled={!focusMode} />
+          Show direct edges
+        </label>
         <button
           onClick={() => {
             if (!svgRef.current || !zoomBehaviorRef.current) {
@@ -362,6 +584,18 @@ export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphP
             <option value="grouped">grouped bundle</option>
           </select>
         </label>
+        <label>
+          PPR gamma:
+          <input
+            type="range"
+            min={1}
+            max={3}
+            step={0.1}
+            value={xpprGamma}
+            onChange={(e) => setXpprGamma(Number(e.target.value))}
+          />
+          <span>{xpprGamma.toFixed(1)}</span>
+        </label>
         <span className="render-stats">
           render {renderNodes.length}/{nodes.length} nodes, {renderLinks.length}/{links.length} links
         </span>
@@ -369,140 +603,29 @@ export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphP
       </div>
 
       <div ref={stageRef} className="graph-stage" style={{ width, height }}>
-        <svg ref={svgRef} width={width} height={height} className="edge-layer">
+        <svg ref={svgRef} width={width} height={height} className="edge-layer edge-layer-low">
           <defs>
             <marker id="arrow-end" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="3.5" markerHeight="3.5" orient="auto-start-reverse">
               <path d="M 0 0 L 10 5 L 0 10 z" fill="context-stroke" />
             </marker>
           </defs>
           <g transform={transform.toString()}>
-            {renderLinks.map((link, idx) => {
-              const sourceId = typeof link.source === 'string' ? link.source : link.source.id;
-              const targetId = typeof link.target === 'string' ? link.target : link.target.id;
-              const source = nodeMap.get(sourceId);
-              const target = nodeMap.get(targetId);
-              if (!source || !target) {
-                return null;
-              }
-              const faded = dimSet ? !(dimSet.has(source.id) && dimSet.has(target.id)) : false;
-              const sx = source.x + 90;
-              const sy = source.y + 24;
-              const tx = target.x;
-              const ty = target.y + 24;
-              const isDirect =
-                highlightState?.directLinks.has(`${source.id}->${target.id}`) ||
-                highlightState?.directLinks.has(`${target.id}->${source.id}`);
-              const parallel = linkParallelInfo.get(link.edgeKey ?? `${source.id}|${target.id}|${idx}`) ?? { index: 0, total: 1 };
-              const strokeWidth = Math.min(8, 1.5 + Math.log2((link.weight ?? 1) + 1) * 1.7);
-              
-              // Determine directionality class
-              let dirClass = '';
-              if (pivotNodeId && isDirect) {
-                if (source.id === pivotNodeId) {
-                  dirClass = 'edge-flow-outgoing';
-                } else if (target.id === pivotNodeId) {
-                  dirClass = 'edge-flow-incoming';
-                }
-              }
-              
-               const edgeKey = link.edgeKey ?? `${source.id}|${target.id}|${idx}`;
-               // Always show labels for edges connected to selected node (incoming/outgoing)
-               const isConnectedToSelected = dirClass === 'edge-flow-outgoing' || dirClass === 'edge-flow-incoming';
-               const showLabel = isConnectedToSelected;
-               const labelX = (sx + tx) / 2;
-               const labelY = (sy + ty) / 2;
-               const labelWidth = link.label ? Math.max(link.label.length * 6.2 + 12, 36) : 36;
-
-               return (
-                <g key={`${source.id}:${target.id}:${idx}`}>
-                  <path
-                    d={edgePath(source, target, edgeMode, groupCenter, parallel.index, parallel.total)}
-                    className={`edge edge-${link.type.toLowerCase()} ${dirClass} ${faded ? 'edge-dim' : ''} ${isDirect ? 'edge-direct' : ''}`}
-                    style={{ strokeWidth }}
-                    markerEnd="url(#arrow-end)"
-                    onMouseEnter={() => setHoveredEdgeKey(edgeKey)}
-                    onMouseLeave={() => setHoveredEdgeKey(null)}
-                  >
-                    <title>{`${link.label ?? link.type} (${link.weight ?? 1})`}</title>
-                  </path>
-                   {showLabel && link.label && (
-                     <g className="edge-label-group">
-                       <rect
-                         x={labelX - labelWidth / 2}
-                         y={labelY - 8}
-                         width={labelWidth}
-                         height={16}
-                         rx="4"
-                         ry="4"
-                         className={`edge-label-bg edge-${link.type.toLowerCase()} ${dirClass}`}
-                       />
-                       <text
-                         x={labelX}
-                         y={labelY}
-                         textAnchor="middle"
-                         dominantBaseline="middle"
-                         className="edge-label"
-                       >
-                         {link.label}
-                       </text>
-                     </g>
-                   )}
-                </g>
-              );
-            })}
+            {displayedNonHighlightedEdgeItems.map((item) => renderEdge(item, false))}
           </g>
         </svg>
 
         <div className="node-layer" style={{ transform: cssZoomTransform(transform) }}>
-          {renderNodes.map((node) => {
-            const faded = dimSet ? !dimSet.has(node.id) : false;
-            const isPivot = pivotNodeId === node.id;
-            const isNeighbor = Boolean(dimSet?.has(node.id) && !isPivot);
-            return (
-              <button
-                type="button"
-                key={node.id}
-                className={`node-card ${node.type} ${faded ? 'node-dim' : ''} ${selectedNodeId === node.id ? 'node-selected' : ''} ${isPivot ? 'node-pivot' : ''} ${isNeighbor ? 'node-neighbor' : ''} ${draggingNodeId === node.id ? 'node-dragging' : ''}`}
-                style={{ transform: `translate(${node.x}px, ${node.y}px)` }}
-                onPointerDown={(event) => {
-                  if (node.type !== 'table' || !stageRef.current) {
-                    return;
-                  }
-                  event.preventDefault();
-                  event.stopPropagation();
-                  const rect = stageRef.current.getBoundingClientRect();
-                  const worldX = (event.clientX - rect.left - transform.x) / transform.k;
-                  const worldY = (event.clientY - rect.top - transform.y) / transform.k;
-                  dragStateRef.current = {
-                    id: node.id,
-                    offsetX: worldX - node.x,
-                    offsetY: worldY - node.y
-                  };
-                  setDraggingNodeId(node.id);
-                }}
-                onMouseEnter={() => setHoveredNodeId(node.id)}
-                onMouseLeave={() => setHoveredNodeId((id) => (id === node.id ? null : id))}
-                onClick={() => {
-                  if (node.isCluster) {
-                    setCollapsedGroups((prev) => {
-                      const next = new Set(prev);
-                      if (next.has(node.group)) {
-                        next.delete(node.group);
-                      } else {
-                        next.add(node.group);
-                      }
-                      return next;
-                    });
-                    return;
-                  }
-                  setSelectedNodeId((prev) => (prev === node.id ? null : node.id));
-                }}
-              >
-                <div className="node-title">{node.label}</div>
-                {node.childCount ? <div className="node-meta"><span>{node.childCount} nodes</span></div> : null}
-              </button>
-            );
-          })}
+          {unselectedRenderNodes.map((node) => renderNodeCard(node))}
+        </div>
+
+        <svg width={width} height={height} className="edge-layer edge-layer-highlight">
+          <g transform={transform.toString()}>
+            {displayedHighlightedEdgeItems.map((item) => renderEdge(item, true))}
+          </g>
+        </svg>
+
+        <div className="node-layer node-layer-highlight" style={{ transform: cssZoomTransform(transform) }}>
+          {highlightedRenderNodes.map((node) => renderNodeCard(node))}
         </div>
       </div>
     </div>

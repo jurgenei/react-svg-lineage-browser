@@ -1,3 +1,4 @@
 dist/
 node_modules
 src/data/.DS_Store
+build/

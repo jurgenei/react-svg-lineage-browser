@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { forceCollide, forceLink, forceManyBody, forceSimulation, forceX, forceY } from 'd3';
 import type { SimLink, SimNode } from '../types/graph';
 
@@ -12,9 +12,13 @@ export function useForceLayout(
   links: SimLink[],
   width: number,
   height: number,
-  groupOrder: string[]
+  groupOrder: string[],
+  xpprGamma = 2
 ): LayoutResult {
   const [layout, setLayout] = useState<LayoutResult>({ nodes, links });
+  const xpprGammaRef = useRef(xpprGamma);
+  const simulationRef = useRef<any>(null);
+  const xForceRef = useRef<any>(null);
 
   const seededNodes = useMemo(() => {
     const clone = nodes.map((node) => ({ ...node }));
@@ -35,14 +39,14 @@ export function useForceLayout(
             : width * 0.5;
 
       const fallbackX = Number.isFinite(xByDepth) ? 0.6 * xByDepth + 0.4 * xByDirectionality : xByDirectionality;
-      node.x = getXpprX(node, width, xpprDomain) ?? fallbackX;
-      const groupIndex = Math.max(0, groupOrder.indexOf(node.group));
-      const bandHeight = Math.max(40, height / Math.max(2, groupOrder.length + 1));
-      node.y = bandHeight * (groupIndex + 1);
-    }
+       node.x = getXpprX(node, width, xpprDomain, 2) ?? fallbackX;
+       const groupIndex = Math.max(0, groupOrder.indexOf(node.group));
+       const bandHeight = Math.max(40, height / Math.max(2, groupOrder.length + 1));
+       node.y = bandHeight * (groupIndex + 1);
+     }
 
-    return clone;
-  }, [nodes, links, width, height, groupOrder]);
+     return clone;
+   }, [nodes, links, width, height, groupOrder]);
 
   useEffect(() => {
     if (!seededNodes.length) {
@@ -56,6 +60,18 @@ export function useForceLayout(
     const tickStride = isLarge ? 5 : isMedium ? 3 : 2;
     const chargeStrength = isLarge ? -320 : isMedium ? -430 : -560;
     const alphaDecay = isLarge ? 0.08 : isMedium ? 0.06 : 0.04;
+    const xpprDomain = computeXpprDomain(seededNodes);
+    const hasXppr = xpprDomain !== undefined;
+    const linkStrength = hasXppr ? (isLarge ? 0.03 : isMedium ? 0.04 : 0.06) : 0.18;
+    const collideIterations = hasXppr ? 2 : 6;
+    const collideRadius = (node: SimNode) => {
+      if (node.isCluster) {
+        return hasXppr ? 58 : 64;
+      }
+      return hasXppr ? 44 : 54;
+    };
+    const xStrength = hasXppr ? (isLarge ? 0.5 : isMedium ? 0.65 : 0.8) : 0.22;
+    const velocityDecay = hasXppr ? 0.5 : 0.35;
 
     const linkForce = forceLink<SimNode, SimLink>(links)
       .id((d) => d.id)
@@ -64,21 +80,19 @@ export function useForceLayout(
         const weight = d.weight ?? 1;
         return base + Math.min(120, weight * (isLarge ? 5 : 8));
       })
-      .strength(0.18);
-
-    const xpprDomain = computeXpprDomain(seededNodes);
+      .strength(linkStrength);
 
     const simulation = forceSimulation(seededNodes)
       .force('charge', forceManyBody().strength(chargeStrength))
       .force('link', linkForce)
-      .force('collide', forceCollide<SimNode>().radius((d) => (d.isCluster ? 64 : 54)).iterations(6))
+      .force('collide', forceCollide<SimNode>().radius(collideRadius).iterations(collideIterations))
       .force(
         'x',
         forceX<SimNode>((node) => {
-          const xpprX = getXpprX(node, width, xpprDomain);
-          if (xpprX !== undefined) {
-            return xpprX;
-          }
+           const xpprX = getXpprX(node, width, xpprDomain, xpprGammaRef.current);
+           if (xpprX !== undefined) {
+             return xpprX;
+           }
 
           const depthWeight = node.depth !== undefined && node.depth >= 0 ? node.depth / Math.max(1, maxDepthFromNodes(seededNodes)) : 0.5;
           const depthX = 70 + depthWeight * Math.max(120, width - 140);
@@ -89,7 +103,7 @@ export function useForceLayout(
                 ? width * 0.86
                 : width * 0.5;
           return 0.65 * depthX + 0.35 * directionalX;
-        }).strength(0.22)
+        }).strength(xStrength)
       )
       .force(
         'y',
@@ -99,12 +113,15 @@ export function useForceLayout(
           return bandHeight * (groupIndex + 1);
         }).strength(0.18)
       )
-      .alpha(1)
-      .alphaDecay(alphaDecay)
-      .velocityDecay(0.35);
+       .alpha(0.3)
+       .alphaDecay(alphaDecay)
+       .velocityDecay(velocityDecay);
 
-    let frame = 0;
-    simulation.on('tick', () => {
+     simulationRef.current = simulation;
+     xForceRef.current = simulation.force('x');
+
+       let frame = 0;
+       simulation.on('tick', () => {
       frame += 1;
       if (frame % tickStride !== 0) {
         return;
@@ -122,13 +139,23 @@ export function useForceLayout(
       });
     });
 
-    return () => {
-      simulation.stop();
-    };
-  }, [seededNodes, links, width, height, groupOrder]);
+     return () => {
+       simulation.stop();
+     };
+   }, [seededNodes, links, width, height, groupOrder]);
 
-  return layout;
-}
+   useEffect(() => {
+     xpprGammaRef.current = xpprGamma;
+     if (simulationRef.current) {
+       if (xForceRef.current) {
+         xForceRef.current.strength(1.2);
+       }
+       simulationRef.current.alpha(0.8).restart();
+     }
+   }, [xpprGamma]);
+
+   return layout;
+ }
 
 
 function computeDepth(nodes: SimNode[], links: SimLink[]) {
@@ -212,7 +239,7 @@ function computeXpprDomain(nodes: SimNode[]): XpprDomain | undefined {
   return { min, max };
 }
 
-function getXpprX(node: SimNode, width: number, domain: XpprDomain | undefined): number | undefined {
+function getXpprX(node: SimNode, width: number, domain: XpprDomain | undefined, gamma: number): number | undefined {
   if (!domain) {
     return undefined;
   }
@@ -225,9 +252,11 @@ function getXpprX(node: SimNode, width: number, domain: XpprDomain | undefined):
   const range = domain.max - domain.min;
   const normalized = range > 0 ? (value - domain.min) / range : 0.5;
   const clamped = Math.max(0, Math.min(1, normalized));
+  const safeGamma = Number.isFinite(gamma) ? Math.max(1, gamma) : 2;
+  const emphasized = Math.pow(clamped, safeGamma);
 
   const leftPadding = 70;
   const rightPadding = 70;
   const drawableWidth = Math.max(120, width - leftPadding - rightPadding);
-  return leftPadding + clamped * drawableWidth;
+  return leftPadding + emphasized * drawableWidth;
 }
