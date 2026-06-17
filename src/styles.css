@@ -201,7 +201,7 @@ body {
 .edge {
   fill: none;
   stroke-width: 2;
-  stroke: var(--accent-blue);
+  stroke: var(--accent-blue-light);
   opacity: 0.8;
   pointer-events: none;
 }
@@ -212,23 +212,23 @@ body {
 }
 
 .edge-reads {
-  stroke: var(--accent-blue);
+  stroke: var(--accent-lime);
 }
 
 .edge-writes {
-  stroke: var(--ing-orange);
+  stroke: var(--accent-amber);
 }
 
 .edge-flow {
-  stroke: var(--accent-blue);
+  stroke: var(--ing-medium-gray);
 }
 
 .edge-flow-outgoing {
-  stroke: var(--accent-purple);
+  stroke: var(--accent-indigo);
 }
 
 .edge-flow-incoming {
-  stroke: var(--accent-fuchsia);
+  stroke: var(--accent-green);
 }
 
 .edge-flow_transitive {
@@ -278,15 +278,15 @@ body {
 }
 
 .edge-label-bg.edge-flow {
-  fill: var(--accent-blue);
+  fill: var(--ing-medium-gray);
 }
 
 .edge-label-bg.edge-flow-outgoing {
-  fill: var(--accent-purple);
+  fill: var(--accent-indigo);
 }
 
 .edge-label-bg.edge-flow-incoming {
-  fill: var(--accent-fuchsia);
+  fill: var(--accent-green);
 }
 
 .edge-label-bg.edge-flow_transitive {

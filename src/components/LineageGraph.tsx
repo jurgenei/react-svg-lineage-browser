@@ -34,7 +34,6 @@ export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphP
   const [edgeMode, setEdgeMode] = useState<'none' | 'soft' | 'grouped'>('soft');
   const [transform, setTransform] = useState<ZoomTransform>(zoomIdentity);
   const [searchTerm, setSearchTerm] = useState('');
-  const [xpprGamma, setXpprGamma] = useState(2);
   const [tableMatches, setTableMatches] = useState<string[]>([]);
   const [tableMatchIndex, setTableMatchIndex] = useState(-1);
   const [pendingFocusId, setPendingFocusId] = useState<string | null>(null);
@@ -59,7 +58,7 @@ export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphP
   }, [data.nodes]);
 
   const visibleGraph = useMemo(() => buildVisibleGraph(data, collapsedGroups), [data, collapsedGroups]);
-  const { nodes, links } = useForceLayout(visibleGraph.nodes, visibleGraph.links, width, height, groupOrder, xpprGamma);
+  const { nodes, links } = useForceLayout(visibleGraph.nodes, visibleGraph.links, width, height, groupOrder);
 
   const nodesWithStacks = useMemo(() => placeUnconnectedNodes(nodes, links, width, height), [nodes, links, width, height]);
 
@@ -236,7 +235,8 @@ export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphP
         highlightState?.directLinks.has(`${target.id}->${source.id}`) ||
         false;
       const showDirectStyling = showDirectEdges && isDirect;
-      const faded = dimSet ? !(dimSet.has(source.id) && dimSet.has(target.id)) : false;
+
+      // Determine dirClass first
       let dirClass = '';
       if (pivotNodeId && isDirect) {
         if (source.id === pivotNodeId) {
@@ -246,10 +246,19 @@ export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphP
         }
       }
 
+      // In focus mode, fade all edges EXCEPT those with outgoing/incoming dirClass
+      let faded = false;
+      if (focusMode && pivotNodeId) {
+        faded = !dirClass; // Only keep non-faded if dirClass is set
+      } else if (dimSet) {
+        // In selection mode, use existing dimSet logic
+        faded = !(dimSet.has(source.id) && dimSet.has(target.id));
+      }
+
       const parallel = linkParallelInfo.get(link) ?? { index: 0, total: 1 };
       const edgeKey = link.edgeKey ?? `${source.id}|${target.id}|${idx}`;
       const key = `${source.id}:${target.id}:${idx}`;
-      const strokeWidth = Math.min(8, 1.5 + Math.log2((link.weight ?? 1) + 1) * 1.7);
+      const strokeWidth=  Math.min(8, 1.5 + Math.log2((link.weight ?? 1) + 1) * 1.7);
 
        items.push({
          key,
@@ -507,7 +516,7 @@ export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphP
         >
           <title>{`${item.link.label ?? item.link.type} (${item.link.weight ?? 1})`}</title>
         </path>
-        {showLabel && item.link.label && (
+        {showLabel && item.link.label && !item.faded && (
           <g className="edge-label-group">
             <rect
               x={labelX - labelWidth / 2}
@@ -583,20 +592,8 @@ export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphP
             <option value="soft">soft bundle</option>
             <option value="grouped">grouped bundle</option>
           </select>
-        </label>
-        <label>
-          PPR gamma:
-          <input
-            type="range"
-            min={1}
-            max={3}
-            step={0.1}
-            value={xpprGamma}
-            onChange={(e) => setXpprGamma(Number(e.target.value))}
-          />
-          <span>{xpprGamma.toFixed(1)}</span>
-        </label>
-        <span className="render-stats">
+         </label>
+         <span className="render-stats">
           render {renderNodes.length}/{nodes.length} nodes, {renderLinks.length}/{links.length} links
         </span>
         {selectedNodeId ? <span className="selected-label">Selected: {selectedNodeId}</span> : null}
