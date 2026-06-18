@@ -1,5 +1,5 @@
-import sampleData from '../data/sample-25-n1-85.json';
-import bussData from '../data/sample-25-n1-90.json';
+import sampleData from '../data/ppr/sample-25.ppr.json';
+import bussData from '../data/ppr/sample-50.ppr.json';
 import type { GraphData } from '../types/graph';
 import { buildTableFlowGraph } from './tableFlow';
 

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { select, zoom, zoomIdentity, type D3ZoomEvent, type ZoomBehavior, type ZoomTransform } from 'd3';
 import type { GraphData, SimLink, SimNode } from '../types/graph';
 import { useForceLayout } from '../hooks/useForceLayout';
@@ -39,11 +39,62 @@ export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphP
   const [pendingFocusId, setPendingFocusId] = useState<string | null>(null);
   const [manualPositions, setManualPositions] = useState<Map<string, { x: number; y: number }>>(new Map());
   const [draggingNodeId, setDraggingNodeId] = useState<string | null>(null);
+  const [nodeSizes, setNodeSizes] = useState<Map<string, { width: number; height: number }>>(new Map());
 
   const svgRef = useRef<SVGSVGElement | null>(null);
   const stageRef = useRef<HTMLDivElement | null>(null);
   const zoomBehaviorRef = useRef<ZoomBehavior<SVGSVGElement, unknown> | null>(null);
   const dragStateRef = useRef<{ id: string; offsetX: number; offsetY: number } | null>(null);
+  const nodeElementsRef = useRef<Map<string, HTMLButtonElement>>(new Map());
+  const nodeObserversRef = useRef<Map<string, ResizeObserver>>(new Map());
+
+  const registerNodeElement = useCallback((nodeId: string, element: HTMLButtonElement | null) => {
+    const currentElement = nodeElementsRef.current.get(nodeId);
+
+    if (!element) {
+      const observer = nodeObserversRef.current.get(nodeId);
+      if (observer) {
+        observer.disconnect();
+        nodeObserversRef.current.delete(nodeId);
+      }
+      nodeElementsRef.current.delete(nodeId);
+      return;
+    }
+
+    if (currentElement === element) {
+      return;
+    }
+
+    const previousObserver = nodeObserversRef.current.get(nodeId);
+    if (previousObserver) {
+      previousObserver.disconnect();
+    }
+
+    nodeElementsRef.current.set(nodeId, element);
+
+    const syncNodeSize = (target: HTMLElement) => {
+      const nextSize = { width: target.offsetWidth, height: target.offsetHeight };
+      setNodeSizes((prev) => {
+        const existing = prev.get(nodeId);
+        if (existing && existing.width === nextSize.width && existing.height === nextSize.height) {
+          return prev;
+        }
+        const next = new Map(prev);
+        next.set(nodeId, nextSize);
+        return next;
+      });
+    };
+
+    syncNodeSize(element);
+
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        syncNodeSize(entry.target as HTMLElement);
+      }
+    });
+    observer.observe(element);
+    nodeObserversRef.current.set(nodeId, observer);
+  }, []);
 
   const groupOrder = useMemo(() => {
     const seen = new Set<string>();
@@ -314,6 +365,16 @@ export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphP
   }, []);
 
   useEffect(() => {
+    return () => {
+      for (const observer of nodeObserversRef.current.values()) {
+        observer.disconnect();
+      }
+      nodeObserversRef.current.clear();
+      nodeElementsRef.current.clear();
+    };
+  }, []);
+
+  useEffect(() => {
     const validNodeIds = new Set(visibleGraph.nodes.map((n) => n.id));
     setManualPositions((prev) => {
       if (prev.size === 0) {
@@ -324,6 +385,22 @@ export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphP
       for (const [id, value] of prev.entries()) {
         if (validNodeIds.has(id)) {
           next.set(id, value);
+        } else {
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+
+    setNodeSizes((prev) => {
+      if (prev.size === 0) {
+        return prev;
+      }
+      let changed = false;
+      const next = new Map<string, { width: number; height: number }>();
+      for (const [id, size] of prev.entries()) {
+        if (validNodeIds.has(id)) {
+          next.set(id, size);
         } else {
           changed = true;
         }
@@ -453,6 +530,7 @@ export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphP
     const isNeighbor = Boolean(dimSet?.has(node.id) && !isPivot);
     return (
       <button
+        ref={(element) => registerNodeElement(node.id, element)}
         type="button"
         key={node.id}
         className={`node-card ${node.type} ${faded ? 'node-dim' : ''} ${selectedNodeId === node.id ? 'node-selected' : ''} ${isPivot ? 'node-pivot' : ''} ${isNeighbor ? 'node-neighbor' : ''} ${draggingNodeId === node.id ? 'node-dragging' : ''}`}
@@ -498,10 +576,11 @@ export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphP
   }
 
   function renderEdge(item: EdgeRenderItem, showLabel: boolean) {
-    const sx = item.source.x + 90;
-    const sy = item.source.y + 24;
-    const tx = item.target.x;
-    const ty = item.target.y + 24;
+    const { start, end } = getAnchoredEndpoints(item.source, item.target, nodeSizes);
+    const sx = start.x;
+    const sy = start.y;
+    const tx = end.x;
+    const ty = end.y;
     const labelX = (sx + tx) / 2;
     const labelY = (sy + ty) / 2;
     const labelWidth = item.link.label ? Math.max(item.link.label.length * 6.2 + 12, 36) : 36;
@@ -509,7 +588,7 @@ export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphP
     return (
       <g key={item.key}>
         <path
-          d={edgePath(item.source, item.target, edgeMode, groupCenter, item.parallelIndex, item.parallelTotal)}
+          d={edgePath(item.source, item.target, edgeMode, groupCenter, item.parallelIndex, item.parallelTotal, nodeSizes)}
           className={`edge edge-${item.link.type.toLowerCase()} ${item.dirClass} ${item.faded ? 'edge-dim' : ''} ${item.showDirectStyling ? 'edge-direct' : ''}`}
           style={{ strokeWidth: item.strokeWidth }}
           markerEnd="url(#arrow-end)"
@@ -645,12 +724,14 @@ function edgePath(
   mode: 'none' | 'soft' | 'grouped',
   groupCenter: Map<string, { x: number; y: number }>,
   parallelIndex = 0,
-  parallelTotal = 1
+  parallelTotal = 1,
+  nodeSizes: Map<string, { width: number; height: number }>
 ): string {
-  const sx = source.x + 90;
-  const sy = source.y + 24;
-  const tx = target.x;
-  const ty = target.y + 24;
+  const { start, end } = getAnchoredEndpoints(source, target, nodeSizes);
+  const sx = start.x;
+  const sy = start.y;
+  const tx = end.x;
+  const ty = end.y;
   const offset = ((parallelIndex - (parallelTotal - 1) / 2) * 14);
 
   if (mode === 'none') {
@@ -671,6 +752,63 @@ function edgePath(
 
   const dx = Math.max(40, Math.abs(tx - sx) * 0.45);
   return `M ${sx} ${sy + offset} C ${sx + dx} ${sy + offset}, ${tx - dx} ${ty + offset}, ${tx} ${ty + offset}`;
+}
+
+function getNodeRect(node: SimNode, nodeSizes: Map<string, { width: number; height: number }>) {
+  const measured = nodeSizes.get(node.id);
+  return {
+    x: node.x,
+    y: node.y,
+    width: measured?.width ?? 190,
+    height: measured?.height ?? 48
+  };
+}
+
+function getRectCenter(rect: { x: number; y: number; width: number; height: number }) {
+  return {
+    x: rect.x + rect.width / 2,
+    y: rect.y + rect.height / 2
+  };
+}
+
+function anchorToRectBorder(
+  rect: { x: number; y: number; width: number; height: number },
+  toward: { x: number; y: number }
+) {
+  const center = getRectCenter(rect);
+  const dx = toward.x - center.x;
+  const dy = toward.y - center.y;
+
+  if (Math.abs(dx) < 1e-6 && Math.abs(dy) < 1e-6) {
+    return center;
+  }
+
+  const halfWidth = rect.width / 2;
+  const halfHeight = rect.height / 2;
+  const scaleX = dx === 0 ? Number.POSITIVE_INFINITY : halfWidth / Math.abs(dx);
+  const scaleY = dy === 0 ? Number.POSITIVE_INFINITY : halfHeight / Math.abs(dy);
+  const scale = Math.min(scaleX, scaleY);
+
+  return {
+    x: center.x + dx * scale,
+    y: center.y + dy * scale
+  };
+}
+
+function getAnchoredEndpoints(
+  source: SimNode,
+  target: SimNode,
+  nodeSizes: Map<string, { width: number; height: number }>
+) {
+  const sourceRect = getNodeRect(source, nodeSizes);
+  const targetRect = getNodeRect(target, nodeSizes);
+  const sourceCenter = getRectCenter(sourceRect);
+  const targetCenter = getRectCenter(targetRect);
+
+  return {
+    start: anchorToRectBorder(sourceRect, targetCenter),
+    end: anchorToRectBorder(targetRect, sourceCenter)
+  };
 }
 
 function placeUnconnectedNodes(nodes: SimNode[], links: SimLink[], width: number, height: number): SimNode[] {
