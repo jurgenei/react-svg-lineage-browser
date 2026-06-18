@@ -1,3 +1,5 @@
 networkx
 numpy
 scipy
+igraph
+leidenalg

@@ -19,6 +19,8 @@ export function useForceLayout(
   const seededNodes = useMemo(() => {
     const clone = nodes.map((node) => ({ ...node }));
     const depth = computeDepth(clone, links);
+    const leftX = 40;
+    const rightX = Math.max(leftX + 120, width - 220);
 
     for (const node of clone) {
       const nodeDepth = depth.get(node.id) ?? -1;
@@ -34,7 +36,22 @@ export function useForceLayout(
             : width * 0.5;
 
         const fallbackX = Number.isFinite(xByDepth) ? 0.6 * xByDepth + 0.4 * xByDirectionality : xByDirectionality;
-        node.x = fallbackX;
+        const xppr = parseXppr(node.xppr);
+
+        if (xppr !== null) {
+          const xpprX = xpprToX(xppr, leftX, rightX);
+          node.x = xpprX;
+          if (xppr === 1 || xppr === 0) {
+            // Keep extreme ranked nodes pinned on left/right rails.
+            node.fx = xpprX;
+          } else {
+            node.fx = null;
+          }
+        } else {
+          node.x = fallbackX;
+          node.fx = null;
+        }
+
         const groupIndex = Math.max(0, groupOrder.indexOf(node.group));
         const bandHeight = Math.max(40, height / Math.max(2, groupOrder.length + 1));
         node.y = bandHeight * (groupIndex + 1);
@@ -72,6 +89,10 @@ export function useForceLayout(
        .force(
          'x',
          forceX<SimNode>((node) => {
+            const xppr = parseXppr(node.xppr);
+            if (xppr !== null) {
+              return xpprToX(xppr, 40, Math.max(160, width - 220));
+            }
            const depthWeight = node.depth !== undefined && node.depth >= 0 ? node.depth / Math.max(1, maxDepthFromNodes(seededNodes)) : 0.5;
            const depthX = 70 + depthWeight * Math.max(120, width - 140);
            const directionalX =
@@ -81,7 +102,7 @@ export function useForceLayout(
                  ? width * 0.86
                  : width * 0.5;
            return 0.65 * depthX + 0.35 * directionalX;
-         }).strength(0.22)
+          }).strength((node) => (parseXppr(node.xppr) !== null ? 0.55 : 0.22))
        )
       .force(
         'y',
@@ -180,5 +201,21 @@ function maxDepthFromNodes(nodes: SimNode[]) {
     max = Math.max(max, node.depth ?? 0);
   }
   return max;
+}
+
+function parseXppr(value: number | string | undefined): number | null {
+  if (value === undefined || value === null) {
+    return null;
+  }
+  const numeric = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(numeric)) {
+    return null;
+  }
+  return Math.max(0, Math.min(1, numeric));
+}
+
+function xpprToX(xppr: number, leftX: number, rightX: number): number {
+  // xppr=1 maps to left, xppr=0 maps to right.
+  return leftX + (1 - xppr) * Math.max(0, rightX - leftX);
 }
 
