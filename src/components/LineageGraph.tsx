@@ -31,6 +31,7 @@ export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphP
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [focusMode, setFocusMode] = useState(false);
   const [showDirectEdges, setShowDirectEdges] = useState(false);
+  const [orthogonalPorts, setOrthogonalPorts] = useState(true);
   const [edgeMode, setEdgeMode] = useState<'none' | 'soft' | 'grouped'>('soft');
   const [transform, setTransform] = useState<ZoomTransform>(zoomIdentity);
   const [searchTerm, setSearchTerm] = useState('');
@@ -47,6 +48,7 @@ export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphP
   const dragStateRef = useRef<{ id: string; offsetX: number; offsetY: number } | null>(null);
   const nodeElementsRef = useRef<Map<string, HTMLButtonElement>>(new Map());
   const nodeObserversRef = useRef<Map<string, ResizeObserver>>(new Map());
+  const nodeRefCallbacksRef = useRef<Map<string, (element: HTMLButtonElement | null) => void>>(new Map());
 
   const registerNodeElement = useCallback((nodeId: string, element: HTMLButtonElement | null) => {
     const currentElement = nodeElementsRef.current.get(nodeId);
@@ -95,6 +97,21 @@ export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphP
     observer.observe(element);
     nodeObserversRef.current.set(nodeId, observer);
   }, []);
+
+  const getNodeRefCallback = useCallback(
+    (nodeId: string) => {
+      const existing = nodeRefCallbacksRef.current.get(nodeId);
+      if (existing) {
+        return existing;
+      }
+      const callback = (element: HTMLButtonElement | null) => {
+        registerNodeElement(nodeId, element);
+      };
+      nodeRefCallbacksRef.current.set(nodeId, callback);
+      return callback;
+    },
+    [registerNodeElement]
+  );
 
   const groupOrder = useMemo(() => {
     const seen = new Set<string>();
@@ -353,6 +370,37 @@ export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphP
     return nonHighlightedEdgeItems.concat(directItems);
   }, [showDirectEdges, nonHighlightedEdgeItems, highlightedEdgeItems]);
 
+  const fadedEdgeItems = useMemo(() => {
+    const seen = new Set<string>();
+    const all = displayedNonHighlightedEdgeItems.concat(displayedHighlightedEdgeItems);
+    const items: EdgeRenderItem[] = [];
+    for (const item of all) {
+      const isActive = item.dirClass === 'edge-flow-incoming' || item.dirClass === 'edge-flow-outgoing';
+      if (isActive || seen.has(item.key)) {
+        continue;
+      }
+      seen.add(item.key);
+      // Keep non-active edges subdued even when they were previously non-faded.
+      items.push(item.faded ? item : { ...item, faded: true });
+    }
+    return items;
+  }, [displayedNonHighlightedEdgeItems, displayedHighlightedEdgeItems]);
+
+  const emphasizedEdgeItems = useMemo(() => {
+    const seen = new Set<string>();
+    const all = displayedNonHighlightedEdgeItems.concat(displayedHighlightedEdgeItems);
+    const items: EdgeRenderItem[] = [];
+    for (const item of all) {
+      const isActive = item.dirClass === 'edge-flow-incoming' || item.dirClass === 'edge-flow-outgoing';
+      if (!isActive || seen.has(item.key)) {
+        continue;
+      }
+      seen.add(item.key);
+      items.push(item);
+    }
+    return items;
+  }, [displayedNonHighlightedEdgeItems, displayedHighlightedEdgeItems]);
+
   useEffect(() => {
     if (!svgRef.current) {
       return;
@@ -407,6 +455,12 @@ export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphP
       }
       return changed ? next : prev;
     });
+
+    for (const key of nodeRefCallbacksRef.current.keys()) {
+      if (!validNodeIds.has(key)) {
+        nodeRefCallbacksRef.current.delete(key);
+      }
+    }
   }, [visibleGraph.nodes]);
 
   useEffect(() => {
@@ -530,7 +584,7 @@ export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphP
     const isNeighbor = Boolean(dimSet?.has(node.id) && !isPivot);
     return (
       <button
-        ref={(element) => registerNodeElement(node.id, element)}
+        ref={getNodeRefCallback(node.id)}
         type="button"
         key={node.id}
         className={`node-card ${node.type} ${faded ? 'node-dim' : ''} ${selectedNodeId === node.id ? 'node-selected' : ''} ${isPivot ? 'node-pivot' : ''} ${isNeighbor ? 'node-neighbor' : ''} ${draggingNodeId === node.id ? 'node-dragging' : ''}`}
@@ -576,7 +630,14 @@ export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphP
   }
 
   function renderEdge(item: EdgeRenderItem, showLabel: boolean) {
-    const { start, end } = getAnchoredEndpoints(item.source, item.target, nodeSizes);
+    const { start, end } = getAnchoredEndpoints(
+      item.source,
+      item.target,
+      nodeSizes,
+      item.parallelIndex,
+      item.parallelTotal,
+      orthogonalPorts
+    );
     const sx = start.x;
     const sy = start.y;
     const tx = end.x;
@@ -588,7 +649,16 @@ export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphP
     return (
       <g key={item.key}>
         <path
-          d={edgePath(item.source, item.target, edgeMode, groupCenter, item.parallelIndex, item.parallelTotal, nodeSizes)}
+          d={edgePath(
+            item.source,
+            item.target,
+            edgeMode,
+            groupCenter,
+            item.parallelIndex,
+            item.parallelTotal,
+            nodeSizes,
+            orthogonalPorts
+          )}
           className={`edge edge-${item.link.type.toLowerCase()} ${item.dirClass} ${item.faded ? 'edge-dim' : ''} ${item.showDirectStyling ? 'edge-direct' : ''}`}
           style={{ strokeWidth: item.strokeWidth }}
           markerEnd="url(#arrow-end)"
@@ -630,6 +700,14 @@ export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphP
         <label style={{ opacity: focusMode ? 1 : 0.5, pointerEvents: focusMode ? 'auto' : 'none' }}>
           <input type="checkbox" checked={showDirectEdges} onChange={(e) => setShowDirectEdges(e.target.checked)} disabled={!focusMode} />
           Show direct edges
+        </label>
+        <label>
+          <input
+            type="checkbox"
+            checked={orthogonalPorts}
+            onChange={(e) => setOrthogonalPorts(e.target.checked)}
+          />
+          Perpendicular box ports
         </label>
         <button
           onClick={() => {
@@ -686,7 +764,7 @@ export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphP
             </marker>
           </defs>
           <g transform={transform.toString()}>
-            {displayedNonHighlightedEdgeItems.map((item) => renderEdge(item, false))}
+            {fadedEdgeItems.map((item) => renderEdge(item, false))}
           </g>
         </svg>
 
@@ -694,15 +772,15 @@ export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphP
           {unselectedRenderNodes.map((node) => renderNodeCard(node))}
         </div>
 
-        <svg width={width} height={height} className="edge-layer edge-layer-highlight">
-          <g transform={transform.toString()}>
-            {displayedHighlightedEdgeItems.map((item) => renderEdge(item, true))}
-          </g>
-        </svg>
-
         <div className="node-layer node-layer-highlight" style={{ transform: cssZoomTransform(transform) }}>
           {highlightedRenderNodes.map((node) => renderNodeCard(node))}
         </div>
+
+        <svg width={width} height={height} className="edge-layer edge-layer-highlight">
+          <g transform={transform.toString()}>
+            {emphasizedEdgeItems.map((item) => renderEdge(item, true))}
+          </g>
+        </svg>
       </div>
     </div>
   );
@@ -725,33 +803,62 @@ function edgePath(
   groupCenter: Map<string, { x: number; y: number }>,
   parallelIndex = 0,
   parallelTotal = 1,
-  nodeSizes: Map<string, { width: number; height: number }>
+  nodeSizes: Map<string, { width: number; height: number }>,
+  orthogonalPorts = false
 ): string {
-  const { start, end } = getAnchoredEndpoints(source, target, nodeSizes);
+  const anchors = getAnchoredEndpoints(source, target, nodeSizes, parallelIndex, parallelTotal, orthogonalPorts);
+  const { start, end } = anchors;
   const sx = start.x;
   const sy = start.y;
   const tx = end.x;
   const ty = end.y;
-  const offset = ((parallelIndex - (parallelTotal - 1) / 2) * 14);
+  const sourceStubX = sx + anchors.startNormal.x * 18;
+  const sourceStubY = sy + anchors.startNormal.y * 18;
+  const targetStubX = tx + anchors.endNormal.x * 18;
+  const targetStubY = ty + anchors.endNormal.y * 18;
 
   if (mode === 'none') {
-    return `M ${sx} ${sy + offset} L ${tx} ${ty + offset}`;
+    if (orthogonalPorts) {
+      return `M ${sx} ${sy} L ${sourceStubX} ${sourceStubY} L ${targetStubX} ${targetStubY} L ${tx} ${ty}`;
+    }
+    return `M ${sx} ${sy} L ${tx} ${ty}`;
   }
 
   if (mode === 'grouped') {
     const sourceGroup = groupCenter.get(source.group);
     const targetGroup = groupCenter.get(target.group);
     if (sourceGroup && targetGroup) {
-      const c1x = sx + Math.max(36, (sourceGroup.x - sx) * 0.6);
-      const c1y = sy + (sourceGroup.y - sy) * 0.6 + offset;
-      const c2x = tx + Math.min(-36, (targetGroup.x - tx) * 0.6);
-      const c2y = ty + (targetGroup.y - ty) * 0.6 + offset;
-      return `M ${sx} ${sy + offset} C ${c1x} ${c1y}, ${c2x} ${c2y}, ${tx} ${ty + offset}`;
+      const c1x = sourceStubX + (sourceGroup.x - sourceStubX) * 0.62;
+      const c1y = sourceStubY + (sourceGroup.y - sourceStubY) * 0.62;
+      const c2x = targetStubX + (targetGroup.x - targetStubX) * 0.62;
+      const c2y = targetStubY + (targetGroup.y - targetStubY) * 0.62;
+      if (orthogonalPorts) {
+        return `M ${sx} ${sy} L ${sourceStubX} ${sourceStubY} C ${c1x} ${c1y}, ${c2x} ${c2y}, ${targetStubX} ${targetStubY} L ${tx} ${ty}`;
+      }
+      return `M ${sx} ${sy} C ${c1x} ${c1y}, ${c2x} ${c2y}, ${tx} ${ty}`;
     }
   }
 
-  const dx = Math.max(40, Math.abs(tx - sx) * 0.45);
-  return `M ${sx} ${sy + offset} C ${sx + dx} ${sy + offset}, ${tx - dx} ${ty + offset}, ${tx} ${ty + offset}`;
+  const dx = tx - sx;
+  const dy = ty - sy;
+  const distance = Math.hypot(dx, dy) || 1;
+  const bend = Math.max(34, Math.min(180, distance * 0.45));
+  const c1x = sourceStubX + (orthogonalPorts ? 0 : dx * 0.28) + anchors.startNormal.x * bend;
+  const c1y = sourceStubY + (orthogonalPorts ? 0 : dy * 0.28) + anchors.startNormal.y * bend;
+  const c2x = targetStubX - (orthogonalPorts ? 0 : dx * 0.28) + anchors.endNormal.x * bend;
+  const c2y = targetStubY - (orthogonalPorts ? 0 : dy * 0.28) + anchors.endNormal.y * bend;
+  if (orthogonalPorts) {
+    return `M ${sx} ${sy} L ${sourceStubX} ${sourceStubY} C ${c1x} ${c1y}, ${c2x} ${c2y}, ${targetStubX} ${targetStubY} L ${tx} ${ty}`;
+  }
+  return `M ${sx} ${sy} C ${c1x} ${c1y}, ${c2x} ${c2y}, ${tx} ${ty}`;
+}
+
+type NodeSide = 'left' | 'right' | 'top' | 'bottom';
+
+interface AnchorPoint {
+  x: number;
+  y: number;
+  side: NodeSide;
 }
 
 function getNodeRect(node: SimNode, nodeSizes: Map<string, { width: number; height: number }>) {
@@ -774,13 +881,17 @@ function getRectCenter(rect: { x: number; y: number; width: number; height: numb
 function anchorToRectBorder(
   rect: { x: number; y: number; width: number; height: number },
   toward: { x: number; y: number }
-) {
+): AnchorPoint {
   const center = getRectCenter(rect);
   const dx = toward.x - center.x;
   const dy = toward.y - center.y;
 
   if (Math.abs(dx) < 1e-6 && Math.abs(dy) < 1e-6) {
-    return center;
+    return {
+      x: rect.x + rect.width,
+      y: center.y,
+      side: 'right'
+    };
   }
 
   const halfWidth = rect.width / 2;
@@ -789,26 +900,174 @@ function anchorToRectBorder(
   const scaleY = dy === 0 ? Number.POSITIVE_INFINITY : halfHeight / Math.abs(dy);
   const scale = Math.min(scaleX, scaleY);
 
-  return {
+  const point = {
     x: center.x + dx * scale,
     y: center.y + dy * scale
+  };
+  return {
+    ...point,
+    side: inferAnchorSide(rect, point)
   };
 }
 
 function getAnchoredEndpoints(
   source: SimNode,
   target: SimNode,
-  nodeSizes: Map<string, { width: number; height: number }>
+  nodeSizes: Map<string, { width: number; height: number }>,
+  parallelIndex = 0,
+  parallelTotal = 1,
+  orthogonalPorts = false
 ) {
   const sourceRect = getNodeRect(source, nodeSizes);
   const targetRect = getNodeRect(target, nodeSizes);
   const sourceCenter = getRectCenter(sourceRect);
   const targetCenter = getRectCenter(targetRect);
+  const base = orthogonalPorts
+    ? anchorOrthogonalPorts(sourceRect, targetRect)
+    : {
+        start: anchorToRectBorder(sourceRect, targetCenter),
+        end: anchorToRectBorder(targetRect, sourceCenter)
+      };
+  const offset = parallelOffsetDistance(parallelIndex, parallelTotal);
+
+  const { start, end } = orthogonalPorts
+    ? offsetOrthogonalPorts(base.start, base.end, sourceRect, targetRect, offset)
+    : offsetAlongLineNormal(base.start, base.end, offset);
 
   return {
-    start: anchorToRectBorder(sourceRect, targetCenter),
-    end: anchorToRectBorder(targetRect, sourceCenter)
+    start,
+    end,
+    startNormal: sideNormal(start.side),
+    endNormal: sideNormal(end.side)
   };
+}
+
+function parallelOffsetDistance(index: number, total: number) {
+  return (index - (total - 1) / 2) * 14;
+}
+
+function sideNormal(side: NodeSide) {
+  if (side === 'left') {
+    return { x: -1, y: 0 };
+  }
+  if (side === 'right') {
+    return { x: 1, y: 0 };
+  }
+  if (side === 'top') {
+    return { x: 0, y: -1 };
+  }
+  return { x: 0, y: 1 };
+}
+
+function inferAnchorSide(
+  rect: { x: number; y: number; width: number; height: number },
+  point: { x: number; y: number }
+): NodeSide {
+  const distances: Array<{ side: NodeSide; distance: number }> = [
+    { side: 'left', distance: Math.abs(point.x - rect.x) },
+    { side: 'right', distance: Math.abs(point.x - (rect.x + rect.width)) },
+    { side: 'top', distance: Math.abs(point.y - rect.y) },
+    { side: 'bottom', distance: Math.abs(point.y - (rect.y + rect.height)) }
+  ];
+  distances.sort((a, b) => a.distance - b.distance);
+  return distances[0].side;
+}
+
+function anchorOrthogonalPorts(
+  sourceRect: { x: number; y: number; width: number; height: number },
+  targetRect: { x: number; y: number; width: number; height: number }
+) {
+  const sourceCenter = getRectCenter(sourceRect);
+  const targetCenter = getRectCenter(targetRect);
+  const dx = targetCenter.x - sourceCenter.x;
+  const dy = targetCenter.y - sourceCenter.y;
+  const guard = 8;
+
+  if (Math.abs(dx) >= Math.abs(dy)) {
+    const sourceSide: NodeSide = dx >= 0 ? 'right' : 'left';
+    const targetSide: NodeSide = dx >= 0 ? 'left' : 'right';
+    const sourceY = clamp(targetCenter.y, sourceRect.y + guard, sourceRect.y + sourceRect.height - guard);
+    const targetY = clamp(sourceCenter.y, targetRect.y + guard, targetRect.y + targetRect.height - guard);
+    return {
+      start: {
+        x: sourceSide === 'right' ? sourceRect.x + sourceRect.width : sourceRect.x,
+        y: sourceY,
+        side: sourceSide
+      },
+      end: {
+        x: targetSide === 'right' ? targetRect.x + targetRect.width : targetRect.x,
+        y: targetY,
+        side: targetSide
+      }
+    };
+  }
+
+  const sourceSide: NodeSide = dy >= 0 ? 'bottom' : 'top';
+  const targetSide: NodeSide = dy >= 0 ? 'top' : 'bottom';
+  const sourceX = clamp(targetCenter.x, sourceRect.x + guard, sourceRect.x + sourceRect.width - guard);
+  const targetX = clamp(sourceCenter.x, targetRect.x + guard, targetRect.x + targetRect.width - guard);
+  return {
+    start: {
+      x: sourceX,
+      y: sourceSide === 'bottom' ? sourceRect.y + sourceRect.height : sourceRect.y,
+      side: sourceSide
+    },
+    end: {
+      x: targetX,
+      y: targetSide === 'bottom' ? targetRect.y + targetRect.height : targetRect.y,
+      side: targetSide
+    }
+  };
+}
+
+function offsetAlongLineNormal(start: AnchorPoint, end: AnchorPoint, distance: number) {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const length = Math.hypot(dx, dy);
+  if (length < 1e-6) {
+    return { start, end };
+  }
+  const nx = -dy / length;
+  const ny = dx / length;
+  return {
+    start: { ...start, x: start.x + nx * distance, y: start.y + ny * distance },
+    end: { ...end, x: end.x + nx * distance, y: end.y + ny * distance }
+  };
+}
+
+function offsetOrthogonalPorts(
+  start: AnchorPoint,
+  end: AnchorPoint,
+  sourceRect: { x: number; y: number; width: number; height: number },
+  targetRect: { x: number; y: number; width: number; height: number },
+  distance: number
+) {
+  return {
+    start: offsetOnEdge(start, sourceRect, distance),
+    end: offsetOnEdge(end, targetRect, distance)
+  };
+}
+
+function offsetOnEdge(
+  point: AnchorPoint,
+  rect: { x: number; y: number; width: number; height: number },
+  distance: number
+): AnchorPoint {
+  const guard = 8;
+  if (point.side === 'left' || point.side === 'right') {
+    return {
+      ...point,
+      y: clamp(point.y + distance, rect.y + guard, rect.y + rect.height - guard)
+    };
+  }
+  return {
+    ...point,
+    x: clamp(point.x + distance, rect.x + guard, rect.x + rect.width - guard)
+  };
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
 }
 
 function placeUnconnectedNodes(nodes: SimNode[], links: SimLink[], width: number, height: number): SimNode[] {
