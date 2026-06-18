@@ -21,6 +21,8 @@ export function useForceLayout(
     const depth = computeDepth(clone, links);
     const leftX = 40;
     const rightX = Math.max(leftX + 120, width - 220);
+    const topY = 48;
+    const bottomY = Math.max(topY + 120, height - 48);
 
     for (const node of clone) {
       const nodeDepth = depth.get(node.id) ?? -1;
@@ -52,9 +54,22 @@ export function useForceLayout(
           node.fx = null;
         }
 
-        const groupIndex = Math.max(0, groupOrder.indexOf(node.group));
-        const bandHeight = Math.max(40, height / Math.max(2, groupOrder.length + 1));
-        node.y = bandHeight * (groupIndex + 1);
+        const ycluster = parseYcluster(node.ycluster);
+        if (ycluster !== null) {
+          const yclusterY = yclusterToY(ycluster, topY, bottomY);
+          node.y = yclusterY;
+          if (ycluster === 1 || ycluster === 0) {
+            // Keep extreme cluster-ranked nodes pinned on top/bottom rails.
+            node.fy = yclusterY;
+          } else {
+            node.fy = null;
+          }
+        } else {
+          const groupIndex = Math.max(0, groupOrder.indexOf(node.group));
+          const bandHeight = Math.max(40, height / Math.max(2, groupOrder.length + 1));
+          node.y = bandHeight * (groupIndex + 1);
+          node.fy = null;
+        }
       }
 
       return clone;
@@ -70,22 +85,22 @@ export function useForceLayout(
     const isLarge = size > 700;
      const isMedium = size > 260;
      const tickStride = isLarge ? 5 : isMedium ? 3 : 2;
-     const chargeStrength = isLarge ? -320 : isMedium ? -430 : -560;
-     const alphaDecay = isLarge ? 0.08 : isMedium ? 0.06 : 0.04;
+     const chargeStrength = isLarge ? -18 : isMedium ? -24 : -30;
+     const alphaDecay = isLarge ? 0.14 : isMedium ? 0.11 : 0.09;
 
      const linkForce = forceLink<SimNode, SimLink>(links)
        .id((d) => d.id)
        .distance((d) => {
-         const base = d.type === 'CALLS' ? 130 : 110;
+         const base = d.type === 'CALLS' ? 64 : 54;
          const weight = d.weight ?? 1;
-         return base + Math.min(120, weight * (isLarge ? 5 : 8));
+         return base + Math.min(22, weight * (isLarge ? 1.5 : 2));
        })
-       .strength(0.18);
+       .strength(0.05);
 
     const simulation = forceSimulation(seededNodes)
        .force('charge', forceManyBody().strength(chargeStrength))
        .force('link', linkForce)
-       .force('collide', forceCollide<SimNode>().radius((d) => (d.isCluster ? 64 : 54)).iterations(6))
+       .force('collide', forceCollide<SimNode>().radius((d) => (d.isCluster ? 64 : 54)).iterations(4))
        .force(
          'x',
          forceX<SimNode>((node) => {
@@ -102,19 +117,23 @@ export function useForceLayout(
                  ? width * 0.86
                  : width * 0.5;
            return 0.65 * depthX + 0.35 * directionalX;
-          }).strength((node) => (parseXppr(node.xppr) !== null ? 0.55 : 0.22))
+           }).strength((node) => (parseXppr(node.xppr) !== null ? 0.94 : 0.32))
        )
       .force(
         'y',
         forceY<SimNode>((node) => {
+          const ycluster = parseYcluster(node.ycluster);
+          if (ycluster !== null) {
+            return yclusterToY(ycluster, 48, Math.max(168, height - 48));
+          }
           const groupIndex = Math.max(0, groupOrder.indexOf(node.group));
           const bandHeight = Math.max(48, height / Math.max(2, groupOrder.length + 1));
           return bandHeight * (groupIndex + 1);
-        }).strength(0.18)
+        }).strength((node) => (parseYcluster(node.ycluster) !== null ? 0.94 : 0.28))
         )
-         .alpha(1)
+         .alpha(0.6)
          .alphaDecay(alphaDecay)
-          .velocityDecay(0.35);
+           .velocityDecay(0.6);
 
         let frame = 0;
         simulation.on('tick', () => {
@@ -214,8 +233,24 @@ function parseXppr(value: number | string | undefined): number | null {
   return Math.max(0, Math.min(1, numeric));
 }
 
+function parseYcluster(value: number | string | undefined): number | null {
+  if (value === undefined || value === null) {
+    return null;
+  }
+  const numeric = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(numeric)) {
+    return null;
+  }
+  return Math.max(0, Math.min(1, numeric));
+}
+
 function xpprToX(xppr: number, leftX: number, rightX: number): number {
   // xppr=1 maps to left, xppr=0 maps to right.
   return leftX + (1 - xppr) * Math.max(0, rightX - leftX);
+}
+
+function yclusterToY(ycluster: number, topY: number, bottomY: number): number {
+  // ycluster=1 maps to top, ycluster=0 maps to bottom.
+  return topY + (1 - ycluster) * Math.max(0, bottomY - topY);
 }
 

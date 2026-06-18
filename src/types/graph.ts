@@ -8,6 +8,7 @@ export interface GraphNode {
   group: string;
   directionality: Directionality;
   xppr?: number | string;
+  ycluster?: number | string;
   metadata?: Record<string, string | number | boolean | null | undefined>;
 }
 
