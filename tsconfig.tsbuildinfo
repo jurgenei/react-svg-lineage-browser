@@ -1,1 +1,1 @@
-{"root":["./src/app.tsx","./src/main.tsx","./src/components/lineagegraph.tsx","./src/hooks/useforcelayout.ts","./src/types/graph.ts","./src/utils/graph.ts","./src/utils/plainjsongraph.ts","./src/utils/tableflow.test.ts","./src/utils/tableflow.ts"],"version":"5.9.3"}
+{"root":["./src/app.tsx","./src/main.tsx","./src/components/lineagegraph.tsx","./src/hooks/useforcelayout.ts","./src/types/graph.ts","./src/utils/categoryconfig.ts","./src/utils/graph.ts","./src/utils/plainjsongraph.ts","./src/utils/tableflow.test.ts","./src/utils/tableflow.ts"],"version":"5.9.3"}

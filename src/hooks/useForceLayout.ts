@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { forceCollide, forceLink, forceManyBody, forceSimulation, forceX, forceY } from 'd3';
 import type { SimLink, SimNode } from '../types/graph';
+import { getCategoryYPosition } from '../utils/categoryConfig';
 
 interface LayoutResult {
   nodes: SimNode[];
@@ -12,7 +13,8 @@ export function useForceLayout(
   links: SimLink[],
   width: number,
   height: number,
-  groupOrder: string[]
+  groupOrder: string[],
+  nodeSizes: Map<string, { width: number; height: number }>
 ): LayoutResult {
   const [layout, setLayout] = useState<LayoutResult>({ nodes, links });
 
@@ -54,22 +56,11 @@ export function useForceLayout(
           node.fx = null;
         }
 
-        const ycluster = parseYcluster(node.ycluster);
-        if (ycluster !== null) {
-          const yclusterY = yclusterToY(ycluster, topY, bottomY);
-          node.y = yclusterY;
-          if (ycluster === 1 || ycluster === 0) {
-            // Keep extreme cluster-ranked nodes pinned on top/bottom rails.
-            node.fy = yclusterY;
-          } else {
-            node.fy = null;
-          }
-        } else {
-          const groupIndex = Math.max(0, groupOrder.indexOf(node.group));
-          const bandHeight = Math.max(40, height / Math.max(2, groupOrder.length + 1));
-          node.y = bandHeight * (groupIndex + 1);
-          node.fy = null;
-        }
+         const categoryYNorm = getCategoryYPosition(node.dominant_category);
+         const categoryY = topY + categoryYNorm * (bottomY - topY);
+         node.y = categoryY;
+         // Allow nodes to spread vertically around their category lane via forceY
+         node.fy = null;
       }
 
       return clone;
@@ -81,12 +72,12 @@ export function useForceLayout(
       return;
     }
 
-    const size = seededNodes.length;
-    const isLarge = size > 700;
-     const isMedium = size > 260;
-     const tickStride = isLarge ? 5 : isMedium ? 3 : 2;
-     const chargeStrength = isLarge ? -18 : isMedium ? -24 : -30;
-     const alphaDecay = isLarge ? 0.14 : isMedium ? 0.11 : 0.09;
+     const size = seededNodes.length;
+     const isLarge = size > 700;
+      const isMedium = size > 260;
+      const tickStride = isLarge ? 5 : isMedium ? 3 : 2;
+      const chargeStrength = isLarge ? -32 : isMedium ? -48 : -60;
+      const alphaDecay = isLarge ? 0.14 : isMedium ? 0.11 : 0.09;
 
      const linkForce = forceLink<SimNode, SimLink>(links)
        .id((d) => d.id)
@@ -95,12 +86,17 @@ export function useForceLayout(
          const weight = d.weight ?? 1;
          return base + Math.min(22, weight * (isLarge ? 1.5 : 2));
        })
-       .strength(0.05);
+        .strength(0.15);
 
     const simulation = forceSimulation(seededNodes)
        .force('charge', forceManyBody().strength(chargeStrength))
        .force('link', linkForce)
-       .force('collide', forceCollide<SimNode>().radius((d) => (d.isCluster ? 64 : 54)).iterations(4))
+       .force(
+         'collide',
+         forceCollide<SimNode>()
+           .radius((node) => getNodeCollisionRadius(node, nodeSizes))
+           .iterations(isLarge ? 2 : isMedium ? 3 : 4)
+       )
        .force(
          'x',
          forceX<SimNode>((node) => {
@@ -119,21 +115,18 @@ export function useForceLayout(
            return 0.65 * depthX + 0.35 * directionalX;
            }).strength((node) => (parseXppr(node.xppr) !== null ? 0.94 : 0.32))
        )
-      .force(
-        'y',
-        forceY<SimNode>((node) => {
-          const ycluster = parseYcluster(node.ycluster);
-          if (ycluster !== null) {
-            return yclusterToY(ycluster, 48, Math.max(168, height - 48));
-          }
-          const groupIndex = Math.max(0, groupOrder.indexOf(node.group));
-          const bandHeight = Math.max(48, height / Math.max(2, groupOrder.length + 1));
-          return bandHeight * (groupIndex + 1);
-        }).strength((node) => (parseYcluster(node.ycluster) !== null ? 0.94 : 0.28))
-        )
+        .force(
+          'y',
+          forceY<SimNode>((node) => {
+            const categoryYNorm = getCategoryYPosition(node.dominant_category);
+            const topBound = 48;
+            const bottomBound = Math.max(168, height - 48);
+            return topBound + categoryYNorm * (bottomBound - topBound);
+          }).strength(() => 0.22)
+          )
          .alpha(0.6)
          .alphaDecay(alphaDecay)
-           .velocityDecay(0.6);
+          .velocityDecay(0.4);
 
         let frame = 0;
         simulation.on('tick', () => {
@@ -157,7 +150,7 @@ export function useForceLayout(
       return () => {
         simulation.stop();
       };
-    }, [seededNodes, links, width, height, groupOrder]);
+    }, [seededNodes, links, width, height, groupOrder, nodeSizes]);
 
 
     return layout;
@@ -252,5 +245,15 @@ function xpprToX(xppr: number, leftX: number, rightX: number): number {
 function yclusterToY(ycluster: number, topY: number, bottomY: number): number {
   // ycluster=1 maps to top, ycluster=0 maps to bottom.
   return topY + (1 - ycluster) * Math.max(0, bottomY - topY);
+}
+
+function getNodeCollisionRadius(node: SimNode, nodeSizes: Map<string, { width: number; height: number }>) {
+  const measured = nodeSizes.get(node.id);
+  const fallbackWidth = node.isCluster ? 220 : 190;
+  const fallbackHeight = node.isCluster ? 64 : 48;
+  const width = measured?.width ?? fallbackWidth;
+  const height = measured?.height ?? fallbackHeight;
+  const padding = node.isCluster ? 18 : 12;
+  return Math.hypot(width, height) / 2 + padding;
 }
 

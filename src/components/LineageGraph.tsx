@@ -3,6 +3,7 @@ import { select, zoom, zoomIdentity, type D3ZoomEvent, type ZoomBehavior, type Z
 import type { GraphData, SimLink, SimNode } from '../types/graph';
 import { useForceLayout } from '../hooks/useForceLayout';
 import { buildVisibleGraph } from '../utils/graph';
+import { getCategoryColor } from '../utils/categoryConfig';
 
 interface LineageGraphProps {
   data: GraphData;
@@ -126,7 +127,7 @@ export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphP
   }, [data.nodes]);
 
   const visibleGraph = useMemo(() => buildVisibleGraph(data, collapsedGroups), [data, collapsedGroups]);
-  const { nodes, links } = useForceLayout(visibleGraph.nodes, visibleGraph.links, width, height, groupOrder);
+  const { nodes, links } = useForceLayout(visibleGraph.nodes, visibleGraph.links, width, height, groupOrder, nodeSizes);
 
   const nodesWithStacks = useMemo(() => placeUnconnectedNodes(nodes, links, width, height), [nodes, links, width, height]);
 
@@ -246,12 +247,27 @@ export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphP
   }, [focusMode, pivotNodeId, links]);
 
   const dimSet = useMemo(() => {
-    const pivot = selectedNodeId ?? hoveredNodeId;
-    if (!focusMode || !pivot) {
+    if (focusMode) {
+      const pivot = selectedNodeId ?? hoveredNodeId;
+      if (!pivot) {
+        return null;
+      }
+      return highlightState?.related ?? null;
+    }
+    if (!selectedNodeId) {
       return null;
     }
-    return highlightState?.related ?? null;
-  }, [focusMode, selectedNodeId, hoveredNodeId, highlightState]);
+    const related = new Set<string>([selectedNodeId]);
+    for (const link of links) {
+      const src = typeof link.source === 'string' ? link.source : link.source.id;
+      const dst = typeof link.target === 'string' ? link.target : link.target.id;
+      if (src === selectedNodeId || dst === selectedNodeId) {
+        related.add(src);
+        related.add(dst);
+      }
+    }
+    return related;
+  }, [focusMode, selectedNodeId, hoveredNodeId, highlightState, links]);
 
   const highlightedNodeIds = useMemo(() => {
     if (focusMode) {
@@ -511,6 +527,51 @@ export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphP
     setPendingFocusId(null);
   }, [pendingFocusId, nodeMap, transform.k]);
 
+  // Auto-fit viewport on first load or data change
+  const hasInitialFitRef = useRef(false);
+  useEffect(() => {
+    if (!svgRef.current || !zoomBehaviorRef.current || hasInitialFitRef.current || nodesWithManualPositions.length === 0) {
+      return;
+    }
+
+    // Compute bounding box of all nodes
+    let minX = Number.POSITIVE_INFINITY;
+    let minY = Number.POSITIVE_INFINITY;
+    let maxX = Number.NEGATIVE_INFINITY;
+    let maxY = Number.NEGATIVE_INFINITY;
+
+    for (const node of nodesWithManualPositions) {
+      minX = Math.min(minX, node.x - 120);
+      minY = Math.min(minY, node.y - 48);
+      maxX = Math.max(maxX, node.x + 120);
+      maxY = Math.max(maxY, node.y + 48);
+    }
+
+    if (!Number.isFinite(minX) || !Number.isFinite(minY) || !Number.isFinite(maxX) || !Number.isFinite(maxY)) {
+      return;
+    }
+
+    const padding = 40;
+    const boundWidth = maxX - minX + padding * 2;
+    const boundHeight = maxY - minY + padding * 2;
+
+    const scale = Math.min(width / boundWidth, height / boundHeight, 1.0);
+    const centerX = (minX + maxX) / 2;
+    const centerY = (minY + maxY) / 2;
+
+    const tx = width / 2 - centerX * scale;
+    const ty = height / 2 - centerY * scale;
+
+    const targetTransform = zoomIdentity.translate(tx, ty).scale(scale);
+
+    select(svgRef.current)
+      .transition()
+      .duration(500)
+      .call(zoomBehaviorRef.current.transform as never, targetTransform);
+
+    hasInitialFitRef.current = true;
+  }, [nodesWithManualPositions.length, width, height]);
+
   const searchResultsText = tableMatches.length
     ? `match ${tableMatchIndex + 1}/${tableMatches.length}`
     : searchTerm.trim().length
@@ -588,7 +649,7 @@ export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphP
         type="button"
         key={node.id}
         className={`node-card ${node.type} ${faded ? 'node-dim' : ''} ${selectedNodeId === node.id ? 'node-selected' : ''} ${isPivot ? 'node-pivot' : ''} ${isNeighbor ? 'node-neighbor' : ''} ${draggingNodeId === node.id ? 'node-dragging' : ''}`}
-        style={{ transform: `translate(${node.x}px, ${node.y}px)` }}
+        style={{ transform: `translate(${node.x}px, ${node.y}px)`, backgroundColor: getCategoryColor(node.dominant_category) }}
         onPointerDown={(event) => {
           if (node.type !== 'table' || !stageRef.current) {
             return;
@@ -661,6 +722,7 @@ export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphP
           )}
           className={`edge edge-${item.link.type.toLowerCase()} ${item.dirClass} ${item.faded ? 'edge-dim' : ''} ${item.showDirectStyling ? 'edge-direct' : ''}`}
           style={{ strokeWidth: item.strokeWidth }}
+          markerStart="url(#arrow-start-dot)"
           markerEnd="url(#arrow-end)"
         >
           <title>{`${item.link.label ?? item.link.type} (${item.link.weight ?? 1})`}</title>
@@ -756,9 +818,23 @@ export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphP
         {selectedNodeId ? <span className="selected-label">Selected: {selectedNodeId}</span> : null}
       </div>
 
-      <div ref={stageRef} className="graph-stage" style={{ width, height }}>
+      <div
+        ref={stageRef}
+        className="graph-stage"
+        style={{ width, height }}
+        onClick={(event) => {
+          const target = event.target;
+          if (target instanceof Element && target.closest('.node-card')) {
+            return;
+          }
+          setSelectedNodeId(null);
+        }}
+      >
         <svg ref={svgRef} width={width} height={height} className="edge-layer edge-layer-low">
           <defs>
+            <marker id="arrow-start-dot" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="3.5" markerHeight="3.5" orient="auto">
+              <circle cx="5" cy="5" r="4" fill="context-stroke" />
+            </marker>
             <marker id="arrow-end" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="3.5" markerHeight="3.5" orient="auto-start-reverse">
               <path d="M 0 0 L 10 5 L 0 10 z" fill="context-stroke" />
             </marker>

@@ -6,6 +6,7 @@ export interface GraphNode {
   type: NodeType;
   label: string;
   group: string;
+  dominant_category?: string;
   directionality: Directionality;
   xppr?: number | string;
   ycluster?: number | string;

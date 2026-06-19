@@ -5,6 +5,7 @@ interface PlainGraphNode {
   label?: string;
   type?: string;
   group?: string;
+  dominant_category?: string;
 }
 
 interface PlainGraphEdge {
@@ -80,6 +81,7 @@ export function parsePlainJsonGraph(content: string): GraphData {
       label: node.label ?? node.id,
       type,
       group: node.group ?? `${type}-nodes`,
+      dominant_category: node.dominant_category,
       directionality: inferDirectionality(node.id, inDegree, outDegree)
     };
   });
