@@ -6,7 +6,7 @@ python3 bippr_tool.py $FLAGS -i $DIR/dsa.json  --o ../build/dsa.ppr.json
 python3 bippr_tool.py $FLAGS -i $DIR/sdp.json  --o ../build/sdp.ppr.json
 
 CMDDIR=$(cd $(dirname $0); pwd)
-FLAGS="-p xppr --autoseed --autosink"
+FLAGS="-p xppr --autoseed --autosink  --resolution 0.03"
 cd $CMDDIR
 DIR=../../parsing/build/json
 FILES=$(cd $DIR; ls -1 *.json)

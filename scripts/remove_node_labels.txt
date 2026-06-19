@@ -1,0 +1,14 @@
+# One node key per line.
+# Lines starting with # are ignored.
+
+category_scores
+category_blend
+schema
+source_distance
+sink_distance
+seed_category
+seed_subcategory
+seed_confidence
+keyword_matches
+stage
+cluster_rank

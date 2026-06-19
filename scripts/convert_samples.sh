@@ -1,6 +1,6 @@
 
 CMDDIR=$(cd $(dirname $0); pwd)
-FLAGS="-p xppr --autoseed --autosink"
+FLAGS="-p xppr --autoseed --autosink --resolution 0.03"
 cd $CMDDIR
 DIR=../src/data
 PPR=$DIR/ppr

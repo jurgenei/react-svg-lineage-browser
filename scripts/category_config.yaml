@@ -1,0 +1,201 @@
+
+
+
+
+rules:
+  - name: Temporary Tables
+    priority: 90
+    category: Operational
+    match:
+      regex:
+        - "^tmp_.*"
+        - "^temp_.*"
+
+  - name: Work Tables
+    priority: 80
+    category: Operational
+    match:
+      regex:
+        - ".*_wrk$"
+        - ".*_work$"
+
+  - name: Log Tables
+    priority: 80
+    category: Logging
+    match:
+      regex:
+        - ".*_log$"
+
+  - name: Status Tables
+    priority: 80
+    category: Processing Status
+    match:
+      regex:
+        - ".*loaded_file_set.*"
+
+  - name: Reporting Tables
+    priority: 70
+    category: Reporting
+    match:
+      starts_with:
+        - dmi_
+        - dmr_
+
+  - name: Raw Tables
+    priority: 100
+    category: Operational
+    match:
+      starts_with:
+        - raw_
+
+  - name: Stage Tables
+    priority: 90
+    category: Operational
+    match:
+      starts_with:
+        - valid_
+
+  - name: Temp Tables
+    priority: 80
+    category: Operational
+    match:
+      starts_with:
+        - tmp_
+        - temp_
+
+  - name: Grid Tables
+    priority: 80
+    category: Customer Reference
+    match:
+      starts_with:
+        - grid_
+
+  - name: GMD Tables
+    priority: 80
+    category: Market Reference
+    match:
+      starts_with:
+        - gmd_
+
+categories:
+
+  Customer Reference:
+    keywords:
+      - customer
+      - client
+      - counterparty
+      - party
+      - obligor
+
+  Operational:
+    keywords:
+      - exposure
+      - facility
+      - transaction
+      - contract
+
+schemas:
+  SDP:
+    default_category: Reference
+    file: ../build/sdp.json
+  DSA:
+    default_category: Operational
+    file: ../build/dsa.json
+  BUSS:
+    default_category: Operational
+    file: ../build/buss.json
+  CONS:
+    default_category: Operational
+    file: ../build/cons.json
+
+categories:
+
+  Static Reference:
+    from:
+      - static_tables.txt
+    keywords:
+      - country
+      - currency
+      - calendar
+      - current
+      - holiday
+      - lookup
+      - xref
+      - mapping
+      - office
+      - region
+      - code
+
+  Customer Reference:
+    from:
+      - customer_tables.txt
+    keywords:
+      - customer
+      - client
+      - counterparty
+      - party
+      - obligor
+      - borrower
+      - debtor
+
+
+  Market Reference:
+    keywords:
+      - market
+      - price
+      - curve
+      - index
+      - rating
+      - spread
+      - yield
+      - gmd_
+
+  Operational:
+    keywords:
+      - facility
+      - raw
+      - valid
+      - limit
+      - outstanding
+      - borrower
+      - exposure
+      - loan
+      - contract
+      - transaction
+      - payment
+      - trade
+      - event
+      - basel
+
+  Risk Calculation:
+    keywords:
+      - pd
+      - lgd
+      - ead
+      - rwa
+      - score
+      - risk
+      - model
+
+  Reporting:
+    keywords:
+      - report
+      - dashboard
+      - mart
+      - summary
+      - aggregate
+      - kpi
+
+subcategories:
+
+  Static Reference: Static Reference
+
+  Customer Reference: Customer Reference
+
+  Market Reference: Market Reference
+
+  Operational: Business Operational
+
+  Risk Calculation: Risk Analytics
+
+  Reporting: Reporting

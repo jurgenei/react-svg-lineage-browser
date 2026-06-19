@@ -1,0 +1,4 @@
+ext_customer_rating_dsa_grid
+basic_customer
+derived_customer
+customer_id_mapping
