@@ -32,16 +32,83 @@ interface LineJumpPoint {
   y: number;
 }
 
+interface GraphUiPrefs {
+  focusMode: boolean;
+  showDirectEdges: boolean;
+  orthogonalPorts: boolean;
+  routingMode: 'smooth' | 'manhattan';
+  edgeMode: 'none' | 'soft' | 'grouped';
+  showHelpPanel: boolean;
+  showLegendPanel: boolean;
+  helpPanelPos: { x: number; y: number };
+  legendPanelPos: { x: number; y: number };
+  cameraTransform: { x: number; y: number; k: number };
+  selectedNodeId: string | null;
+}
+
+type PanelName = 'help' | 'legend';
+
+interface DragPanelState {
+  panel: PanelName;
+  startClientX: number;
+  startClientY: number;
+  startX: number;
+  startY: number;
+}
+
+const GRAPH_UI_PREFS_KEY = 'lineage.exploring.graphUiPrefs.v1';
+
+function readGraphUiPrefs(): Partial<GraphUiPrefs> {
+  if (typeof window === 'undefined') {
+    return {};
+  }
+  try {
+    const raw = window.localStorage.getItem(GRAPH_UI_PREFS_KEY);
+    if (!raw) {
+      return {};
+    }
+    const parsed = JSON.parse(raw) as Partial<GraphUiPrefs>;
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function readStoredTransform(value: unknown): ZoomTransform {
+  if (!value || typeof value !== 'object') {
+    return zoomIdentity;
+  }
+  const maybe = value as { x?: unknown; y?: unknown; k?: unknown };
+  const x = typeof maybe.x === 'number' && Number.isFinite(maybe.x) ? maybe.x : 0;
+  const y = typeof maybe.y === 'number' && Number.isFinite(maybe.y) ? maybe.y : 0;
+  const k = typeof maybe.k === 'number' && Number.isFinite(maybe.k) && maybe.k > 0 ? maybe.k : 1;
+  return zoomIdentity.translate(x, y).scale(k);
+}
+
+function isIdentityTransform(t: ZoomTransform): boolean {
+  return Math.abs(t.x) < 1e-6 && Math.abs(t.y) < 1e-6 && Math.abs(t.k - 1) < 1e-6;
+}
+
 export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphProps) {
+  const initialPrefsRef = useRef<Partial<GraphUiPrefs> | null>(null);
+  if (initialPrefsRef.current === null) {
+    initialPrefsRef.current = readGraphUiPrefs();
+  }
+  const initialPrefs = initialPrefsRef.current;
+
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => new Set(defaultCollapsedGroups(data)));
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
-  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
-  const [focusMode, setFocusMode] = useState(false);
-  const [showDirectEdges, setShowDirectEdges] = useState(false);
-  const [orthogonalPorts, setOrthogonalPorts] = useState(true);
-  const [routingMode, setRoutingMode] = useState<'smooth' | 'manhattan'>('smooth');
-  const [edgeMode, setEdgeMode] = useState<'none' | 'soft' | 'grouped'>('soft');
-  const [transform, setTransform] = useState<ZoomTransform>(zoomIdentity);
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(initialPrefs.selectedNodeId ?? null);
+  const [focusMode, setFocusMode] = useState(initialPrefs.focusMode ?? false);
+  const [showDirectEdges, setShowDirectEdges] = useState(initialPrefs.showDirectEdges ?? false);
+  const [orthogonalPorts, setOrthogonalPorts] = useState(initialPrefs.orthogonalPorts ?? true);
+  const [routingMode, setRoutingMode] = useState<'smooth' | 'manhattan'>(initialPrefs.routingMode ?? 'smooth');
+  const [edgeMode, setEdgeMode] = useState<'none' | 'soft' | 'grouped'>(initialPrefs.edgeMode ?? 'soft');
+  const [showHelpPanel, setShowHelpPanel] = useState(initialPrefs.showHelpPanel ?? false);
+  const [showLegendPanel, setShowLegendPanel] = useState(initialPrefs.showLegendPanel ?? false);
+  const [helpPanelPos, setHelpPanelPos] = useState<{ x: number; y: number }>(() => initialPrefs.helpPanelPos ?? { x: Math.max(10, width - 250), y: 10 });
+  const [legendPanelPos, setLegendPanelPos] = useState<{ x: number; y: number }>(() => initialPrefs.legendPanelPos ?? { x: 10, y: 10 });
+  const [transform, setTransform] = useState<ZoomTransform>(() => readStoredTransform(initialPrefs.cameraTransform));
   const [searchTerm, setSearchTerm] = useState('');
   const [tableMatches, setTableMatches] = useState<string[]>([]);
   const [tableMatchIndex, setTableMatchIndex] = useState(-1);
@@ -57,6 +124,7 @@ export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphP
   const nodeElementsRef = useRef<Map<string, HTMLButtonElement>>(new Map());
   const nodeObserversRef = useRef<Map<string, ResizeObserver>>(new Map());
   const nodeRefCallbacksRef = useRef<Map<string, (element: HTMLButtonElement | null) => void>>(new Map());
+  const [dragPanelState, setDragPanelState] = useState<DragPanelState | null>(null);
 
   const registerNodeElement = useCallback((nodeId: string, element: HTMLButtonElement | null) => {
     const currentElement = nodeElementsRef.current.get(nodeId);
@@ -512,12 +580,28 @@ export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphP
     const placements: Array<{ key: string; x: number; y: number; w: number; h: number }> = [];
     const byKey = new Map<string, { x: number; y: number }>();
 
+    const highlightedRects = Array.from(highlightedNodeIds)
+      .map((nodeId) => {
+        const node = nodeMap.get(nodeId);
+        if (!node) {
+          return null;
+        }
+        const measured = nodeSizes.get(nodeId);
+        return {
+          x: node.x,
+          y: node.y,
+          w: measured?.width ?? 190,
+          h: measured?.height ?? 48
+        };
+      })
+      .filter((rect): rect is { x: number; y: number; w: number; h: number } => rect !== null);
+
     for (const item of emphasizedEdgeItems) {
       if (!item.labelLines.length || item.faded) {
         continue;
       }
       const { start, end } = getAnchoredEndpoints(item.source, item.target, nodeSizes, 0, 1, orthogonalPorts);
-      const baseX = (start.x + end.x) / 2;
+      let baseX = (start.x + end.x) / 2;
       let baseY = (start.y + end.y) / 2;
       const longestLabel = item.labelLines.reduce((max, text) => Math.max(max, text.length), 0);
       const w = Math.max(longestLabel * 6.3 + 18, 44);
@@ -527,12 +611,21 @@ export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphP
       let attempts = 0;
       while (attempts < 18) {
         const intersects = placements.some((p) => Math.abs(baseX - p.x) < (w + p.w) / 2 + 6 && Math.abs(baseY - p.y) < (h + p.h) / 2 + 4);
-        if (!intersects) {
+        const overlapsHighlightedNode = highlightedRects.some(
+          (rect) =>
+            Math.abs(baseX - (rect.x + rect.w / 2)) < (w + rect.w) / 2 + 10 &&
+            Math.abs(baseY - (rect.y + rect.h / 2)) < (h + rect.h) / 2 + 10
+        );
+
+        if (!intersects && !overlapsHighlightedNode) {
           break;
         }
         const dir = attempts % 2 === 0 ? 1 : -1;
         const band = Math.floor(attempts / 2) + 1;
         baseY += dir * band * step;
+        if (overlapsHighlightedNode) {
+          baseX += dir * 6;
+        }
         attempts += 1;
       }
 
@@ -541,7 +634,7 @@ export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphP
     }
 
     return byKey;
-  }, [emphasizedEdgeItems, nodeSizes, orthogonalPorts]);
+  }, [emphasizedEdgeItems, nodeSizes, orthogonalPorts, highlightedNodeIds, nodeMap]);
 
   useEffect(() => {
     if (!svgRef.current) {
@@ -551,8 +644,74 @@ export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphP
       .scaleExtent([0.2, 4])
       .on('zoom', (event: D3ZoomEvent<SVGSVGElement, unknown>) => setTransform(event.transform));
     zoomBehaviorRef.current = zoomBehavior;
-    select(svgRef.current).call(zoomBehavior as never);
+    const selection = select(svgRef.current);
+    selection.call(zoomBehavior as never);
+    if (!isIdentityTransform(transform)) {
+      selection.call(zoomBehavior.transform as never, transform);
+    }
   }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+    const prefs: GraphUiPrefs = {
+      focusMode,
+      showDirectEdges,
+      orthogonalPorts,
+      routingMode,
+      edgeMode,
+      showHelpPanel,
+      showLegendPanel,
+      helpPanelPos,
+      legendPanelPos,
+      cameraTransform: { x: transform.x, y: transform.y, k: transform.k },
+      selectedNodeId
+    };
+    try {
+      window.localStorage.setItem(GRAPH_UI_PREFS_KEY, JSON.stringify(prefs));
+    } catch {
+      // Ignore storage quota/privacy mode errors and keep UI responsive.
+    }
+  }, [focusMode, showDirectEdges, orthogonalPorts, routingMode, edgeMode, showHelpPanel, showLegendPanel, helpPanelPos, legendPanelPos, transform, selectedNodeId]);
+
+  useEffect(() => {
+    if (!dragPanelState) {
+      return;
+    }
+    const dragState = dragPanelState;
+
+    function clampPanelPosition(panel: PanelName, x: number, y: number) {
+      const panelWidth = panel === 'help' ? 240 : 190;
+      const panelHeight = 150;
+      return {
+        x: clamp(x, 6, Math.max(6, width - panelWidth - 6)),
+        y: clamp(y, 6, Math.max(6, height - panelHeight - 6))
+      };
+    }
+
+    function handlePointerMove(event: PointerEvent) {
+      const dx = event.clientX - dragState.startClientX;
+      const dy = event.clientY - dragState.startClientY;
+      const next = clampPanelPosition(dragState.panel, dragState.startX + dx, dragState.startY + dy);
+      if (dragState.panel === 'help') {
+        setHelpPanelPos(next);
+      } else {
+        setLegendPanelPos(next);
+      }
+    }
+
+    function handlePointerUp() {
+      setDragPanelState(null);
+    }
+
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', handlePointerUp);
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', handlePointerUp);
+    };
+  }, [dragPanelState, width, height]);
 
   useEffect(() => {
     return () => {
@@ -566,6 +725,8 @@ export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphP
 
   useEffect(() => {
     const validNodeIds = new Set(visibleGraph.nodes.map((n) => n.id));
+    setSelectedNodeId((prev) => (prev && !validNodeIds.has(prev) ? null : prev));
+    setPendingFocusId((prev) => (prev && !validNodeIds.has(prev) ? null : prev));
     setManualPositions((prev) => {
       if (prev.size === 0) {
         return prev;
@@ -654,7 +815,7 @@ export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphP
   }, [pendingFocusId, nodeMap, transform.k]);
 
   // Auto-fit viewport on first load or data change
-  const hasInitialFitRef = useRef(false);
+  const hasInitialFitRef = useRef(!isIdentityTransform(transform));
   useEffect(() => {
     if (!svgRef.current || !zoomBehaviorRef.current || hasInitialFitRef.current || nodesWithManualPositions.length === 0) {
       return;
@@ -765,6 +926,47 @@ export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphP
       .call(zoomBehaviorRef.current.transform as never, targetTransform);
   }
 
+  function resetZoomView() {
+    if (!svgRef.current || !zoomBehaviorRef.current) {
+      return;
+    }
+    select(svgRef.current)
+      .transition()
+      .duration(240)
+      .call(zoomBehaviorRef.current.transform as never, zoomIdentity);
+  }
+
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      const target = event.target;
+      const isTypingTarget =
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target instanceof HTMLSelectElement;
+      if (isTypingTarget) {
+        return;
+      }
+
+      if (event.key === 'Escape') {
+        setSelectedNodeId(null);
+        setHoveredNodeId(null);
+        return;
+      }
+      if (event.key === 'f' || event.key === 'F') {
+        event.preventDefault();
+        setFocusMode((v) => !v);
+        return;
+      }
+      if (event.key === 'r' || event.key === 'R') {
+        event.preventDefault();
+        resetZoomView();
+      }
+    }
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
+
   function renderNodeCard(node: SimNode) {
     const faded = dimSet ? !dimSet.has(node.id) : false;
     const isPivot = pivotNodeId === node.id;
@@ -814,6 +1016,18 @@ export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphP
         {node.childCount ? <div className="node-meta"><span>{node.childCount} nodes</span></div> : null}
       </button>
     );
+  }
+
+  function beginPanelDrag(panel: PanelName, event: React.PointerEvent<HTMLDivElement>) {
+    event.preventDefault();
+    const pos = panel === 'help' ? helpPanelPos : legendPanelPos;
+    setDragPanelState({
+      panel,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      startX: pos.x,
+      startY: pos.y
+    });
   }
 
   function renderEdge(item: EdgeRenderItem, showLabel: boolean) {
@@ -942,19 +1156,9 @@ export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphP
             <option value="manhattan">manhattan</option>
           </select>
         </label>
-        <button
-          onClick={() => {
-            if (!svgRef.current || !zoomBehaviorRef.current) {
-              return;
-            }
-            select(svgRef.current)
-              .transition()
-              .duration(240)
-              .call(zoomBehaviorRef.current.transform as never, zoomIdentity);
-          }}
-        >
-          Reset zoom
-        </button>
+        <button onClick={resetZoomView}>Reset zoom</button>
+        <button onClick={() => setShowLegendPanel((v) => !v)}>{showLegendPanel ? 'Hide legend' : 'Show legend'}</button>
+        <button onClick={() => setShowHelpPanel((v) => !v)}>{showHelpPanel ? 'Hide help' : 'Show help'}</button>
         <label>
           Table search:
           <input
@@ -1001,6 +1205,25 @@ export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphP
           setSelectedNodeId(null);
         }}
       >
+        {showHelpPanel && (
+          <div className="overlay-panel overlay-help" style={{ left: helpPanelPos.x, top: helpPanelPos.y }}>
+            <div className="overlay-panel-drag-handle" onPointerDown={(e) => beginPanelDrag('help', e)}><strong>Shortcuts</strong></div>
+            <div><kbd>Esc</kbd> clear selection</div>
+            <div><kbd>F</kbd> toggle focus mode</div>
+            <div><kbd>R</kbd> reset zoom</div>
+            <div>Click canvas to clear current node selection.</div>
+          </div>
+        )}
+        {showLegendPanel && (
+          <div className="overlay-panel overlay-legend" style={{ left: legendPanelPos.x, top: legendPanelPos.y }}>
+            <div className="overlay-panel-drag-handle" onPointerDown={(e) => beginPanelDrag('legend', e)}><strong>Legend</strong></div>
+            <div><span className="legend-dot legend-calls" /> calls</div>
+            <div><span className="legend-dot legend-reads" /> reads</div>
+            <div><span className="legend-dot legend-writes" /> writes</div>
+            <div><span className="legend-dot legend-outgoing" /> outgoing (focus)</div>
+            <div><span className="legend-dot legend-incoming" /> incoming (focus)</div>
+          </div>
+        )}
         <svg ref={svgRef} width={width} height={height} className="edge-layer edge-layer-low">
           <defs>
             <marker id="arrow-start-dot" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="3.5" markerHeight="3.5" orient="auto">

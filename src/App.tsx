@@ -4,11 +4,21 @@ import { LineageGraph } from './components/LineageGraph';
 import type { GraphData } from './types/graph';
 import { parsePlainJsonGraph } from './utils/plainJsonGraph';
 
+type AppTheme = 'light' | 'dark';
+const THEME_STORAGE_KEY = 'lineage.exploring.theme.v1';
+
 export default function App() {
   const [dimensions, setDimensions] = useState({ width: 5600, height: 3280 });
   const [graphData, setGraphData] = useState<GraphData>({ nodes: [], links: [] });
   const [fileName, setFileName] = useState<string | null>(null);
   const [parseError, setParseError] = useState<string | null>(null);
+  const [theme, setTheme] = useState<AppTheme>(() => {
+    if (typeof window === 'undefined') {
+      return 'light';
+    }
+    const stored = window.localStorage.getItem(THEME_STORAGE_KEY);
+    return stored === 'dark' ? 'dark' : 'light';
+  });
 
   useEffect(() => {
     function handleResize() {
@@ -22,6 +32,19 @@ export default function App() {
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
+  useEffect(() => {
+    if (typeof document === 'undefined') {
+      return;
+    }
+    document.documentElement.setAttribute('data-theme', theme);
+    document.documentElement.style.colorScheme = theme;
+    try {
+      window.localStorage.setItem(THEME_STORAGE_KEY, theme);
+    } catch {
+      // Ignore private mode/quota issues; theme still applies for current session.
+    }
+  }, [theme]);
+
   const stats = useMemo(
     () => `${graphData.nodes.length.toLocaleString()} nodes / ${graphData.links.length.toLocaleString()} links`,
     [graphData]
@@ -32,6 +55,13 @@ export default function App() {
       <header className="app-header">
         <h1>Lineage Semantic Explorer</h1>
         <div className="dataset-controls">
+          <label>
+            Theme:
+            <select value={theme} onChange={(e) => setTheme(e.target.value as AppTheme)}>
+              <option value="light">light</option>
+              <option value="dark">dark</option>
+            </select>
+          </label>
           <label>
             Load graph JSON:
             <input
