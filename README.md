@@ -43,17 +43,11 @@ All nodes have a `connected_component_id` (from `02_seed_components.py`):
 - `src/hooks/useForceLayout.ts`: D3 simulation and directional force logic
 - `src/utils/graph.ts`: visible graph projection and neighborhood helpers
 - `src/types/graph.ts`: data model types
-- `src/data/sample-lineage.json`: starter graph data
-- `src/data/buss-preprocessor.graph.json`: real graph dataset generated from `buss.preprocessor.xml`
-- `scripts/check-data.mjs`: quick JSON integrity check
-- `scripts/generate_buss_graph.py`: regenerate real dataset from source XML
 
 ## Run
 
 ```zsh
 npm install
-npm run gen:buss
-npm run check:data
 npm run dev
 ```
 
