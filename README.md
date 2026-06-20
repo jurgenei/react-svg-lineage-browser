@@ -7,16 +7,16 @@ Interactive semantic lineage graph explorer built with React, TypeScript, Vite, 
 The UI employs a **component-aware spatial arrangement**:
 
 ```
-┌──────────────────────────────────────────────────────┐
+┌───────────────────────────────────────────────────────┐
 │ Small Components                  Main Graph (Force)  │
 │ (sorted by size,                  (largest component) │
 │  stacked & grouped)                                   │
 │                                                       │
-│ [1]  [2]  [3]     ← Smallest first                   │
-│ [4]  [5]  [6]     ← Growing down, wrap to new col    │
-│                    [Largest - full force layout]     │
-│                    [across 60% of canvas]            │
-└──────────────────────────────────────────────────────┘
+│ [1]  [2]  [3]     ← Smallest first                    │
+│ [4]  [5]  [6]     ← Growing down, wrap to new col     │
+│                    [Largest - full force layout]      │
+│                    [across 60% of canvas]             │
+└───────────────────────────────────────────────────────┘
 ```
 
 All nodes have a `connected_component_id` (from `02_seed_components.py`):
@@ -36,7 +36,6 @@ All nodes have a `connected_component_id` (from `02_seed_components.py`):
 6. Add group clustering with expand/collapse.
 7. Add pan/zoom, hover highlight, selection, and focus mode.
 8. Add a tiny data-validation harness for graph JSON.
-9. Milestone 2: load real `buss.preprocessor` graph JSON and add large-graph rendering controls.
 
 ## Project Structure
 
@@ -52,7 +51,6 @@ All nodes have a `connected_component_id` (from `02_seed_components.py`):
 ## Run
 
 ```zsh
-cd /Users/cs79en/Developer/Projects/lineage/projects/exploring
 npm install
 npm run gen:buss
 npm run check:data
@@ -64,7 +62,6 @@ Open the URL printed by Vite (typically `http://localhost:5173`).
 ## Build
 
 ```zsh
-cd /Users/cs79en/Developer/Projects/lineage/projects/exploring
 npm run build
 npm run preview
 ```
