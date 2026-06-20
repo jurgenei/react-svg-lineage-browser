@@ -507,6 +507,42 @@ export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphP
     return jumps;
   }, [routingMode, emphasizedEdgeItems, nodeSizes, orthogonalPorts]);
 
+  const edgeLabelPositions = useMemo(() => {
+    const lineHeight = 13;
+    const placements: Array<{ key: string; x: number; y: number; w: number; h: number }> = [];
+    const byKey = new Map<string, { x: number; y: number }>();
+
+    for (const item of emphasizedEdgeItems) {
+      if (!item.labelLines.length || item.faded) {
+        continue;
+      }
+      const { start, end } = getAnchoredEndpoints(item.source, item.target, nodeSizes, 0, 1, orthogonalPorts);
+      const baseX = (start.x + end.x) / 2;
+      let baseY = (start.y + end.y) / 2;
+      const longestLabel = item.labelLines.reduce((max, text) => Math.max(max, text.length), 0);
+      const w = Math.max(longestLabel * 6.3 + 18, 44);
+      const h = Math.max(18, item.labelLines.length * lineHeight + 8);
+
+      const step = 14;
+      let attempts = 0;
+      while (attempts < 18) {
+        const intersects = placements.some((p) => Math.abs(baseX - p.x) < (w + p.w) / 2 + 6 && Math.abs(baseY - p.y) < (h + p.h) / 2 + 4);
+        if (!intersects) {
+          break;
+        }
+        const dir = attempts % 2 === 0 ? 1 : -1;
+        const band = Math.floor(attempts / 2) + 1;
+        baseY += dir * band * step;
+        attempts += 1;
+      }
+
+      placements.push({ key: item.key, x: baseX, y: baseY, w, h });
+      byKey.set(item.key, { x: baseX, y: baseY });
+    }
+
+    return byKey;
+  }, [emphasizedEdgeItems, nodeSizes, orthogonalPorts]);
+
   useEffect(() => {
     if (!svgRef.current) {
       return;
@@ -793,8 +829,11 @@ export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphP
     const sy = start.y;
     const tx = end.x;
     const ty = end.y;
-    const labelX = (sx + tx) / 2;
-    const labelY = (sy + ty) / 2;
+    const defaultLabelX = (sx + tx) / 2;
+    const defaultLabelY = (sy + ty) / 2;
+    const adjusted = edgeLabelPositions.get(item.key);
+    const labelX = adjusted?.x ?? defaultLabelX;
+    const labelY = adjusted?.y ?? defaultLabelY;
     const longestLabel = item.labelLines.reduce((max, text) => Math.max(max, text.length), 0);
     const labelWidth = Math.max(longestLabel * 6.3 + 18, 44);
     const lineHeight = 13;
