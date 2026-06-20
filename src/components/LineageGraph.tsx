@@ -14,12 +14,13 @@ interface LineageGraphProps {
 interface EdgeRenderItem {
   key: string;
   edgeKey: string;
-  link: SimLink;
+  links: SimLink[];
+  primaryLink: SimLink;
   source: SimNode;
   target: SimNode;
-  parallelIndex: number;
-  parallelTotal: number;
+  labelLines: string[];
   strokeWidth: number;
+  edgeTypeClass: string;
   dirClass: string;
   faded: boolean;
   isDirect: boolean;
@@ -206,26 +207,6 @@ export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphP
     });
   }, [links, cullingEnabled, visibleNodeIds]);
 
-  const linkParallelInfo = useMemo(() => {
-    const grouped = new Map<string, SimLink[]>();
-    for (const link of renderLinks) {
-      const src = typeof link.source === 'string' ? link.source : link.source.id;
-      const dst = typeof link.target === 'string' ? link.target : link.target.id;
-      const key = `${src}|${dst}`;
-      const arr = grouped.get(key) ?? [];
-      arr.push(link);
-      grouped.set(key, arr);
-    }
-
-    const info = new Map<SimLink, { index: number; total: number }>();
-    for (const [, arr] of grouped.entries()) {
-      arr.forEach((link, index) => {
-        info.set(link, { index, total: arr.length });
-      });
-    }
-    return info;
-  }, [renderLinks]);
-
   const pivotNodeId = selectedNodeId ?? hoveredNodeId;
 
   const highlightState = useMemo(() => {
@@ -305,13 +286,22 @@ export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphP
   const edgeRenderItems = useMemo(() => {
     const items: EdgeRenderItem[] = [];
 
-    renderLinks.forEach((link, idx) => {
+    const grouped = new Map<string, SimLink[]>();
+    for (const link of renderLinks) {
       const sourceId = typeof link.source === 'string' ? link.source : link.source.id;
       const targetId = typeof link.target === 'string' ? link.target : link.target.id;
+      const key = `${sourceId}|${targetId}`;
+      const arr = grouped.get(key) ?? [];
+      arr.push(link);
+      grouped.set(key, arr);
+    }
+
+    for (const [pairKey, bundle] of grouped.entries()) {
+      const [sourceId, targetId] = pairKey.split('|');
       const source = nodeMap.get(sourceId);
       const target = nodeMap.get(targetId);
       if (!source || !target) {
-        return;
+        continue;
       }
 
       const isDirect =
@@ -339,29 +329,33 @@ export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphP
         faded = !(dimSet.has(source.id) && dimSet.has(target.id));
       }
 
-      const parallel = linkParallelInfo.get(link) ?? { index: 0, total: 1 };
-      const edgeKey = link.edgeKey ?? `${source.id}|${target.id}|${idx}`;
-      const key = `${source.id}:${target.id}:${idx}`;
-      const strokeWidth=  Math.min(8, 1.5 + Math.log2((link.weight ?? 1) + 1) * 1.7);
+      const totalWeight = bundle.reduce((sum, link) => sum + (link.weight ?? 1), 0);
+      const strokeWidth = Math.min(12, 2 + Math.log2(totalWeight + 1) * 1.9);
+      const labelLines = bundle
+        .map((link) => link.label ?? link.type)
+        .filter((value, index, arr) => Boolean(value) && arr.indexOf(value) === index);
+      const typeSet = new Set(bundle.map((link) => link.type.toLowerCase()));
+      const edgeTypeClass = typeSet.size === 1 ? `edge-${bundle[0].type.toLowerCase()}` : 'edge-flow';
 
-       items.push({
-         key,
-         edgeKey,
-         link,
-         source,
-         target,
-         parallelIndex: parallel.index,
-         parallelTotal: parallel.total,
-         strokeWidth,
-         dirClass,
-         faded,
-         isDirect,
-         showDirectStyling
-       });
-    });
+      items.push({
+        key: `${source.id}:${target.id}`,
+        edgeKey: bundle[0].edgeKey ?? `${source.id}|${target.id}`,
+        links: bundle,
+        primaryLink: bundle[0],
+        source,
+        target,
+        labelLines,
+        strokeWidth,
+        edgeTypeClass,
+        dirClass,
+        faded,
+        isDirect,
+        showDirectStyling
+      });
+    }
 
     return items;
-  }, [renderLinks, nodeMap, highlightState, dimSet, pivotNodeId, linkParallelInfo]);
+  }, [renderLinks, nodeMap, highlightState, dimSet, pivotNodeId]);
 
   const highlightedEdgeItems = useMemo(
     () => edgeRenderItems.filter((item) => highlightedNodeIds.has(item.source.id) && highlightedNodeIds.has(item.target.id)),
@@ -695,8 +689,8 @@ export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphP
       item.source,
       item.target,
       nodeSizes,
-      item.parallelIndex,
-      item.parallelTotal,
+      0,
+      1,
       orthogonalPorts
     );
     const sx = start.x;
@@ -705,7 +699,11 @@ export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphP
     const ty = end.y;
     const labelX = (sx + tx) / 2;
     const labelY = (sy + ty) / 2;
-    const labelWidth = item.link.label ? Math.max(item.link.label.length * 6.2 + 12, 36) : 36;
+    const longestLabel = item.labelLines.reduce((max, text) => Math.max(max, text.length), 0);
+    const labelWidth = Math.max(longestLabel * 6.3 + 18, 44);
+    const lineHeight = 13;
+    const labelHeight = Math.max(18, item.labelLines.length * lineHeight + 8);
+    const labelTop = labelY - labelHeight / 2;
 
     return (
       <g key={item.key}>
@@ -715,37 +713,40 @@ export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphP
             item.target,
             edgeMode,
             groupCenter,
-            item.parallelIndex,
-            item.parallelTotal,
+            0,
+            1,
             nodeSizes,
             orthogonalPorts
           )}
-          className={`edge edge-${item.link.type.toLowerCase()} ${item.dirClass} ${item.faded ? 'edge-dim' : ''} ${item.showDirectStyling ? 'edge-direct' : ''}`}
+          className={`edge ${item.edgeTypeClass} ${item.dirClass} ${item.faded ? 'edge-dim' : ''} ${item.showDirectStyling ? 'edge-direct' : ''}`}
           style={{ strokeWidth: item.strokeWidth }}
           markerStart="url(#arrow-start-dot)"
           markerEnd="url(#arrow-end)"
         >
-          <title>{`${item.link.label ?? item.link.type} (${item.link.weight ?? 1})`}</title>
+          <title>{item.labelLines.join('\n')}</title>
         </path>
-        {showLabel && item.link.label && !item.faded && (
+        {showLabel && item.labelLines.length > 0 && !item.faded && (
           <g className="edge-label-group">
             <rect
               x={labelX - labelWidth / 2}
-              y={labelY - 8}
+              y={labelTop}
               width={labelWidth}
-              height={16}
+              height={labelHeight}
               rx="4"
               ry="4"
-              className={`edge-label-bg edge-${item.link.type.toLowerCase()} ${item.dirClass}`}
+              className={`edge-label-bg ${item.edgeTypeClass} ${item.dirClass}`}
             />
             <text
               x={labelX}
-              y={labelY}
+              y={labelTop + lineHeight}
               textAnchor="middle"
-              dominantBaseline="middle"
               className="edge-label"
             >
-              {item.link.label}
+              {item.labelLines.map((text, index) => (
+                <tspan key={`${item.key}-${index}`} x={labelX} dy={index === 0 ? 0 : lineHeight}>
+                  {text}
+                </tspan>
+              ))}
             </text>
           </g>
         )}
