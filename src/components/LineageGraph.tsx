@@ -27,6 +27,11 @@ interface EdgeRenderItem {
   showDirectStyling: boolean;
 }
 
+interface LineJumpPoint {
+  x: number;
+  y: number;
+}
+
 export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphProps) {
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => new Set(defaultCollapsedGroups(data)));
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
@@ -34,6 +39,7 @@ export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphP
   const [focusMode, setFocusMode] = useState(false);
   const [showDirectEdges, setShowDirectEdges] = useState(false);
   const [orthogonalPorts, setOrthogonalPorts] = useState(true);
+  const [routingMode, setRoutingMode] = useState<'smooth' | 'manhattan'>('smooth');
   const [edgeMode, setEdgeMode] = useState<'none' | 'soft' | 'grouped'>('soft');
   const [transform, setTransform] = useState<ZoomTransform>(zoomIdentity);
   const [searchTerm, setSearchTerm] = useState('');
@@ -330,7 +336,9 @@ export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphP
       }
 
       const totalWeight = bundle.reduce((sum, link) => sum + (link.weight ?? 1), 0);
-      const strokeWidth = Math.min(12, 2 + Math.log2(totalWeight + 1) * 1.9);
+      const baseStrokeWidth = Math.min(12, 2 + Math.log2(totalWeight + 1) * 1.9);
+      const isDirectionalFocusEdge = dirClass === 'edge-flow-incoming' || dirClass === 'edge-flow-outgoing';
+      const strokeWidth = isDirectionalFocusEdge ? Math.max(1.8, baseStrokeWidth * 0.72) : baseStrokeWidth;
       const labelLines = bundle
         .map((link) => link.label ?? link.type)
         .filter((value, index, arr) => Boolean(value) && arr.indexOf(value) === index);
@@ -410,6 +418,94 @@ export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphP
     }
     return items;
   }, [displayedNonHighlightedEdgeItems, displayedHighlightedEdgeItems]);
+
+  const manhattanLineJumps = useMemo(() => {
+    const jumps = new Map<string, LineJumpPoint[]>();
+    if (routingMode !== 'manhattan') {
+      return jumps;
+    }
+
+    const endpointExclusion = 20;
+
+    const routes = emphasizedEdgeItems.map((item) => ({
+      key: item.key,
+      points: manhattanRoutePoints(item.source, item.target, nodeSizes, orthogonalPorts)
+    }));
+
+    for (let i = 0; i < routes.length; i += 1) {
+      const a = routes[i];
+      const aSegments = orthSegments(a.points);
+      for (let j = i + 1; j < routes.length; j += 1) {
+        const b = routes[j];
+        const bSegments = orthSegments(b.points);
+
+        for (const sa of aSegments) {
+          if (sa.orientation !== 'h') {
+            continue;
+          }
+          for (const sb of bSegments) {
+            if (sb.orientation !== 'v') {
+              continue;
+            }
+
+            const ix = sb.x1;
+            const iy = sa.y1;
+            const withinA =
+              ix > Math.min(sa.x1, sa.x2) + endpointExclusion &&
+              ix < Math.max(sa.x1, sa.x2) - endpointExclusion;
+            const withinB =
+              iy > Math.min(sb.y1, sb.y2) + endpointExclusion &&
+              iy < Math.max(sb.y1, sb.y2) - endpointExclusion;
+            if (!withinA || !withinB) {
+              continue;
+            }
+
+            const arr = jumps.get(a.key) ?? [];
+            if (!arr.some((p) => Math.abs(p.x - ix) < 0.5 && Math.abs(p.y - iy) < 0.5)) {
+              arr.push({ x: ix, y: iy });
+            }
+            jumps.set(a.key, arr);
+          }
+        }
+
+        for (const sb of bSegments) {
+          if (sb.orientation !== 'h') {
+            continue;
+          }
+          for (const sa of aSegments) {
+            if (sa.orientation !== 'v') {
+              continue;
+            }
+
+            const ix = sa.x1;
+            const iy = sb.y1;
+            const withinB =
+              ix > Math.min(sb.x1, sb.x2) + endpointExclusion &&
+              ix < Math.max(sb.x1, sb.x2) - endpointExclusion;
+            const withinA =
+              iy > Math.min(sa.y1, sa.y2) + endpointExclusion &&
+              iy < Math.max(sa.y1, sa.y2) - endpointExclusion;
+            if (!withinA || !withinB) {
+              continue;
+            }
+
+            const arr = jumps.get(b.key) ?? [];
+            if (!arr.some((p) => Math.abs(p.x - ix) < 0.5 && Math.abs(p.y - iy) < 0.5)) {
+              arr.push({ x: ix, y: iy });
+            }
+            jumps.set(b.key, arr);
+          }
+        }
+      }
+    }
+
+    for (const [key, points] of jumps.entries()) {
+      points.sort((p1, p2) => p1.x - p2.x || p1.y - p2.y);
+      jumps.set(key, points);
+    }
+
+    return jumps;
+  }, [routingMode, emphasizedEdgeItems, nodeSizes, orthogonalPorts]);
 
   useEffect(() => {
     if (!svgRef.current) {
@@ -705,10 +801,10 @@ export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphP
     const labelHeight = Math.max(18, item.labelLines.length * lineHeight + 8);
     const labelTop = labelY - labelHeight / 2;
 
-    return (
-      <g key={item.key}>
-        <path
-          d={edgePath(
+    const pathD =
+      routingMode === 'manhattan'
+        ? manhattanEdgePath(item.source, item.target, nodeSizes, orthogonalPorts)
+        : edgePath(
             item.source,
             item.target,
             edgeMode,
@@ -717,7 +813,15 @@ export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphP
             1,
             nodeSizes,
             orthogonalPorts
-          )}
+          );
+
+    const jumpPoints = manhattanLineJumps.get(item.key) ?? [];
+    const jumpArcPath = jumpPointsToPath(jumpPoints, 6, 7);
+
+    return (
+      <g key={item.key}>
+        <path
+          d={pathD}
           className={`edge ${item.edgeTypeClass} ${item.dirClass} ${item.faded ? 'edge-dim' : ''} ${item.showDirectStyling ? 'edge-direct' : ''}`}
           style={{ strokeWidth: item.strokeWidth }}
           markerStart="url(#arrow-start-dot)"
@@ -725,6 +829,26 @@ export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphP
         >
           <title>{item.labelLines.join('\n')}</title>
         </path>
+        {routingMode === 'manhattan' && jumpArcPath && (
+          <>
+            <path
+              d={jumpArcPath}
+              fill="none"
+              stroke="var(--ing-white)"
+              strokeWidth={item.strokeWidth + 2.2}
+              strokeLinecap="round"
+              pointerEvents="none"
+            />
+            <path
+              d={jumpArcPath}
+              className={`edge ${item.edgeTypeClass} ${item.dirClass} ${item.faded ? 'edge-dim' : ''} ${item.showDirectStyling ? 'edge-direct' : ''}`}
+              style={{ strokeWidth: item.strokeWidth }}
+              fill="none"
+              strokeLinecap="round"
+              pointerEvents="none"
+            />
+          </>
+        )}
         {showLabel && item.labelLines.length > 0 && !item.faded && (
           <g className="edge-label-group">
             <rect
@@ -771,6 +895,13 @@ export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphP
             onChange={(e) => setOrthogonalPorts(e.target.checked)}
           />
           Perpendicular box ports
+        </label>
+        <label>
+          Routing:
+          <select value={routingMode} onChange={(e) => setRoutingMode(e.target.value as 'smooth' | 'manhattan')}>
+            <option value="smooth">smooth</option>
+            <option value="manhattan">manhattan</option>
+          </select>
         </label>
         <button
           onClick={() => {
@@ -1145,6 +1276,140 @@ function offsetOnEdge(
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
+}
+
+function manhattanEdgePath(
+  source: SimNode,
+  target: SimNode,
+  nodeSizes: Map<string, { width: number; height: number }>,
+  orthogonalPorts = false
+): string {
+  const points = manhattanRoutePoints(source, target, nodeSizes, orthogonalPorts);
+  return roundedOrthogonalPath(points, 12);
+}
+
+function manhattanRoutePoints(
+  source: SimNode,
+  target: SimNode,
+  nodeSizes: Map<string, { width: number; height: number }>,
+  orthogonalPorts = false
+): Array<{ x: number; y: number }> {
+  const anchors = getAnchoredEndpoints(source, target, nodeSizes, 0, 1, orthogonalPorts);
+  const sx = anchors.start.x;
+  const sy = anchors.start.y;
+  const tx = anchors.end.x;
+  const ty = anchors.end.y;
+
+  const dx = tx - sx;
+  const dy = ty - sy;
+
+  if (Math.abs(dx) >= Math.abs(dy)) {
+    const mx = sx + dx * 0.5;
+    return [
+      { x: sx, y: sy },
+      { x: mx, y: sy },
+      { x: mx, y: ty },
+      { x: tx, y: ty }
+    ];
+  }
+  const my = sy + dy * 0.5;
+  return [
+    { x: sx, y: sy },
+    { x: sx, y: my },
+    { x: tx, y: my },
+    { x: tx, y: ty }
+  ];
+}
+
+interface OrthSegment {
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  orientation: 'h' | 'v';
+}
+
+function orthSegments(points: Array<{ x: number; y: number }>): OrthSegment[] {
+  const segments: OrthSegment[] = [];
+  for (let i = 0; i < points.length - 1; i += 1) {
+    const a = points[i];
+    const b = points[i + 1];
+    if (Math.abs(a.x - b.x) < 1e-6 && Math.abs(a.y - b.y) < 1e-6) {
+      continue;
+    }
+    if (Math.abs(a.y - b.y) < 1e-6) {
+      segments.push({ x1: a.x, y1: a.y, x2: b.x, y2: b.y, orientation: 'h' });
+    } else if (Math.abs(a.x - b.x) < 1e-6) {
+      segments.push({ x1: a.x, y1: a.y, x2: b.x, y2: b.y, orientation: 'v' });
+    }
+  }
+  return segments;
+}
+
+function jumpPointsToPath(points: Array<{ x: number; y: number }>, radius: number, height: number): string {
+  if (!points.length) {
+    return '';
+  }
+  return points
+    .map((point) => `M ${point.x - radius} ${point.y} Q ${point.x} ${point.y - height} ${point.x + radius} ${point.y}`)
+    .join(' ');
+}
+
+function roundedOrthogonalPath(points: Array<{ x: number; y: number }>, cornerRadius: number): string {
+  if (points.length < 2) {
+    return '';
+  }
+
+  const compact: Array<{ x: number; y: number }> = [points[0]];
+  for (let i = 1; i < points.length; i += 1) {
+    const prev = compact[compact.length - 1];
+    const curr = points[i];
+    if (Math.abs(prev.x - curr.x) > 1e-6 || Math.abs(prev.y - curr.y) > 1e-6) {
+      compact.push(curr);
+    }
+  }
+
+  if (compact.length < 2) {
+    return '';
+  }
+
+  let d = `M ${compact[0].x} ${compact[0].y}`;
+  for (let i = 1; i < compact.length - 1; i += 1) {
+    const prev = compact[i - 1];
+    const curr = compact[i];
+    const next = compact[i + 1];
+
+    const v1x = curr.x - prev.x;
+    const v1y = curr.y - prev.y;
+    const v2x = next.x - curr.x;
+    const v2y = next.y - curr.y;
+    const len1 = Math.hypot(v1x, v1y);
+    const len2 = Math.hypot(v2x, v2y);
+
+    if (len1 < 1e-6 || len2 < 1e-6) {
+      d += ` L ${curr.x} ${curr.y}`;
+      continue;
+    }
+
+    const sameDir = Math.abs(v1x * v2y - v1y * v2x) < 1e-6;
+    if (sameDir) {
+      d += ` L ${curr.x} ${curr.y}`;
+      continue;
+    }
+
+    const r = Math.min(cornerRadius, len1 * 0.5, len2 * 0.5);
+    const inX = curr.x - (v1x / len1) * r;
+    const inY = curr.y - (v1y / len1) * r;
+    const outX = curr.x + (v2x / len2) * r;
+    const outY = curr.y + (v2y / len2) * r;
+
+    d += ` L ${inX} ${inY}`;
+    d += ` Q ${curr.x} ${curr.y} ${outX} ${outY}`;
+  }
+
+  const last = compact[compact.length - 1];
+  d += ` L ${last.x} ${last.y}`;
+  return d;
 }
 
 interface ComponentGroup {
