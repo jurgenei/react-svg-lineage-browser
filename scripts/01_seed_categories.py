@@ -3,37 +3,24 @@
 """
 01_seed_categories.py
 
-Seed categorization for lineage graphs.
+Seed categorization for lineage graphs (Unix filter pattern).
 
-Classification precedence:
-
-    1. Rules
-        - regex
-        - starts_with
-        - ends_with
-        - contains
-
-    2. Keyword categories
-
-    3. Schema default
+Supports:
+  stdin/stdout: cat input.json | ./01_seed_categories.py > output.json
+  file args:   ./01_seed_categories.py -i input.json -o output.json
+  batch mode:  ./01_seed_categories.py --glob "*.json"
 
 Inputs:
-    sdp.json
-    dsa.json
-    buss.json
-    cons.json
-
-    category_config.yaml
+    stdin or -i file
 
 Outputs:
-    sdp_seeded.json
-    dsa_seeded.json
-    buss_seeded.json
-    cons_seeded.json
+    stdout or -o file
 """
 
+import argparse
 import json
 import re
+import sys
 from pathlib import Path
 
 import yaml
@@ -124,16 +111,7 @@ CONFIG = load_config()
 CONFIG_PATH = Path(CONFIG_FILE).resolve()
 
 
-GRAPH_FILES = {
-    name: schema["file"]
-    for name, schema in CONFIG["schemas"].items()
-}
-
-SCHEMA_DEFAULTS = {
-    schema: cfg["default_category"]
-    for schema, cfg in CONFIG["schemas"].items()
-}
-
+KEYWORDS = build_keyword_index(CONFIG, CONFIG_PATH)
 KEYWORDS = build_keyword_index(CONFIG, CONFIG_PATH)
 
 SUBCATEGORIES = CONFIG.get(
@@ -348,9 +326,7 @@ def classify_by_keywords(table_name):
 # -------------------------------------------------------
 
 
-def determine_category(
-        schema,
-        table_name):
+def determine_category(table_name):
 
     # ----------------------------------
     # Rule Classification
@@ -404,24 +380,14 @@ def determine_category(
         }
 
     # ----------------------------------
-    # Schema Default
+    # Unknown (no rule or keyword match)
     # ----------------------------------
 
-    category = SCHEMA_DEFAULTS.get(
-        schema,
-        "Unknown"
-    )
-
     return {
-        "category": category,
-        "subcategory":
-            SUBCATEGORIES.get(
-                category,
-                category
-            ),
-        "confidence": 0.50,
-        "classification_source":
-            "schema_default",
+        "category": "Unknown",
+        "subcategory": "Unknown",
+        "confidence": 0.0,
+        "classification_source": "unknown",
         "keyword_matches": 0
     }
 
@@ -478,9 +444,7 @@ def detect_sources_and_sinks(
 # -------------------------------------------------------
 
 
-def annotate_nodes(
-        schema,
-        graph):
+def annotate_nodes(graph):
 
     nodes = graph["nodes"]
     edges = graph["edges"]
@@ -497,12 +461,7 @@ def annotate_nodes(
             node["id"]
         )
 
-        result = determine_category(
-            schema,
-            table_name
-        )
-
-        node["schema"] = schema
+        result = determine_category(table_name)
 
         node["is_source"] = (
                 node["id"] in sources
@@ -540,93 +499,116 @@ def annotate_nodes(
 # -------------------------------------------------------
 
 
-def process_graph(
-        schema,
-        filename):
-
-    print(
-        f"\nProcessing {schema}"
-    )
-    print("-" * 50)
-
-    with open(
-            filename,
-            "r",
-            encoding="utf-8") as f:
-
-        graph = json.load(f)
-
-    annotate_nodes(
-        schema,
-        graph
-    )
-
-    output_file = (
-        f"{Path(filename).stem}_seeded.json"
-    )
-
-    with open(
-            output_file,
-            "w",
-            encoding="utf-8") as f:
-
-        json.dump(
-            graph,
-            f,
-            indent=2
-        )
-
-    print(
-        f"Nodes : {len(graph['nodes'])}"
-    )
-
-    print(
-        f"Edges : {len(graph['edges'])}"
-    )
-
-    print(
-        f"Written: {output_file}"
-    )
-
 
 # -------------------------------------------------------
 # Main
 # -------------------------------------------------------
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Seed categorization for lineage graphs (Unix filter)"
+    )
+    parser.add_argument(
+        "-i", "--input",
+        help="Input graph JSON file. If omitted, reads from stdin."
+    )
+    parser.add_argument(
+        "-o", "--output",
+        help="Output JSON file. If omitted, writes to stdout."
+    )
+    parser.add_argument(
+        "--glob",
+        help="Glob pattern to match multiple input files (batch mode)."
+    )
+
+    return parser.parse_args()
+
+
+def annotate_graph_stream(graph):
+    """Annotate a graph object in place with seed categories."""
+    nodes = graph.get("nodes", [])
+    edges = graph.get("edges", [])
+    
+    if not nodes or not edges:
+        raise ValueError("Graph must have 'nodes' and 'edges' arrays.")
+    
+    sources, sinks = detect_sources_and_sinks(nodes, edges)
+
+    for node in nodes:
+        table_name = node.get("label", node["id"])
+        result = determine_category(table_name)
+
+        node["is_source"] = node["id"] in sources
+        node["is_sink"] = node["id"] in sinks
+        node["seed_category"] = result["category"]
+        node["seed_subcategory"] = result["subcategory"]
+        node["seed_confidence"] = result["confidence"]
+        node["classification_source"] = result["classification_source"]
+        node["keyword_matches"] = result["keyword_matches"]
+
+    return graph
+
+
 def main():
+    args = parse_args()
 
-    print()
-    print("=" * 60)
-    print("SEED CATEGORY GENERATION")
-    print("=" * 60)
+    # Batch mode
+    if args.glob:
+        input_files = sorted(Path.cwd().glob(args.glob))
+        if not input_files:
+            print(f"No files matching pattern: {args.glob}", file=sys.stderr)
+            return 1
+        
+        for input_file in input_files:
+            try:
+                with open(input_file, "r", encoding="utf-8") as f:
+                    graph = json.load(f)
+                
+                graph = annotate_graph_stream(graph)
 
-    if not Path(
-            CONFIG_FILE).exists():
+                output_file = input_file.with_stem(f"{input_file.stem}_seeded")
+                with open(output_file, "w", encoding="utf-8") as f:
+                    json.dump(graph, f, indent=2)
+                
+                print(f"Processed: {input_file} -> {output_file}", file=sys.stderr)
+            except Exception as e:
+                print(f"FAILED {input_file}: {e}", file=sys.stderr)
+                return 1
+        
+        print("Completed successfully.", file=sys.stderr)
+        return 0
+    
+    # Filter mode: single file or stdin/stdout
+    try:
+        if args.input:
+            input_handle = open(args.input, "r", encoding="utf-8")
+        else:
+            input_handle = sys.stdin
 
-        raise FileNotFoundError(
-            f"Cannot find {CONFIG_FILE}"
-        )
+        if args.output:
+            output_handle = open(args.output, "w", encoding="utf-8")
+        else:
+            output_handle = sys.stdout
 
-    for schema, filename in GRAPH_FILES.items():
+        try:
+            graph = json.load(input_handle)
+            graph = annotate_graph_stream(graph)
+            json.dump(graph, output_handle, indent=2)
+            
+            if args.input or args.output:
+                print(f"Processed: {len(graph.get('nodes', []))} nodes", file=sys.stderr)
+        finally:
+            if args.input:
+                input_handle.close()
+            if args.output:
+                output_handle.close()
 
-        if not Path(
-                filename).exists():
-
-            print(
-                f"WARNING: Missing {filename}"
-            )
-
-            continue
-
-        process_graph(
-            schema,
-            filename
-        )
-
-    print()
-    print("Finished.")
+        return 0
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

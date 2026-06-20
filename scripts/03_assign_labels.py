@@ -3,30 +3,27 @@
 """
 03_assign_labels.py
 
+Assign business labels to nodes (Unix filter pattern).
+
 Input:
-    *_propagated.json
+    stdin or -i file
 
 Output:
-    *_labelled.json
+    stdout or -o file
 
 Adds:
-
     domain
     stage
     business_label
 """
 
+import argparse
 import json
 import re
+import sys
 from pathlib import Path
 from collections import defaultdict, Counter
 
-INPUT_FILES = [
-    "sdp_seeded_propagated.json",
-    "dsa_seeded_propagated.json",
-    "buss_seeded_propagated.json",
-    "cons_seeded_propagated.json"
-]
 
 # ------------------------------------------
 # Domain Keywords
@@ -310,24 +307,90 @@ def process_file(filename):
 # Main
 # ------------------------------------------
 
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Assign business labels to nodes (Unix filter)")
+    parser.add_argument("-i", "--input", help="Input JSON file. If omitted, reads from stdin.")
+    parser.add_argument("-o", "--output", help="Output JSON file. If omitted, writes to stdout.")
+    parser.add_argument("--glob", help="Glob pattern for batch mode.")
+    return parser.parse_args()
+
+
+def process_graph_stream(graph):
+    """Assign labels to nodes in place."""
+    nodes = graph.get("nodes", [])
+
+    if not nodes:
+        raise ValueError("Graph must have 'nodes'.")
+
+    cluster_domains = determine_cluster_domains(nodes)
+
+    for node in nodes:
+        cluster = node.get("cluster", -1)
+        domain = cluster_domains.get(cluster, "Unknown")
+        stage = determine_stage(node)
+        category = node.get("dominant_category", node.get("seed_category", "Unknown"))
+        business_label = create_business_label(category, domain, stage)
+
+        node["domain"] = domain
+        node["stage"] = stage
+        node["business_label"] = business_label
+
+    return graph
+
+
 def main():
+    args = parse_args()
 
-    for filename in INPUT_FILES:
+    # Batch mode
+    if args.glob:
+        input_files = sorted(Path.cwd().glob(args.glob))
+        if not input_files:
+            print(f"No files matching: {args.glob}", file=sys.stderr)
+            return 1
 
-        if not Path(filename).exists():
+        for input_file in input_files:
+            try:
+                with open(input_file, "r", encoding="utf-8") as f:
+                    graph = json.load(f)
 
-            print(
-                f"Missing: {filename}"
-            )
+                graph = process_graph_stream(graph)
 
-            continue
+                output_file = input_file.with_stem(f"{input_file.stem}_labelled")
+                with open(output_file, "w", encoding="utf-8") as f:
+                    json.dump(graph, f, indent=2)
 
-        process_file(
-            filename
-        )
+                print(f"Processed: {input_file} -> {output_file}", file=sys.stderr)
+            except Exception as e:
+                print(f"FAILED {input_file}: {e}", file=sys.stderr)
+                return 1
 
-    print("\nFinished")
+        print("Completed successfully.", file=sys.stderr)
+        return 0
+
+    # Filter mode
+    try:
+        input_handle = open(args.input, "r", encoding="utf-8") if args.input else sys.stdin
+        output_handle = open(args.output, "w", encoding="utf-8") if args.output else sys.stdout
+
+        try:
+            graph = json.load(input_handle)
+            graph = process_graph_stream(graph)
+            json.dump(graph, output_handle, indent=2)
+
+            if args.input or args.output:
+                print(f"Processed: {len(graph.get('nodes', []))} nodes", file=sys.stderr)
+        finally:
+            if args.input:
+                input_handle.close()
+            if args.output:
+                output_handle.close()
+
+        return 0
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

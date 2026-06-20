@@ -2,6 +2,30 @@
 
 Interactive semantic lineage graph explorer built with React, TypeScript, Vite, and D3 force layout.
 
+## Layout Strategy
+
+The UI employs a **component-aware spatial arrangement**:
+
+```
+┌──────────────────────────────────────────────────────┐
+│ Small Components                  Main Graph (Force)  │
+│ (sorted by size,                  (largest component) │
+│  stacked & grouped)                                   │
+│                                                       │
+│ [1]  [2]  [3]     ← Smallest first                   │
+│ [4]  [5]  [6]     ← Growing down, wrap to new col    │
+│                    [Largest - full force layout]     │
+│                    [across 60% of canvas]            │
+└──────────────────────────────────────────────────────┘
+```
+
+All nodes have a `connected_component_id` (from `02_seed_components.py`):
+- **Identifies disconnected subgraphs** within a single dataset
+- **Enables spatial separation** — no overlap between unrelated graphs
+- Single-node graphs (sources/sinks with no connections) are their own component
+
+
+
 ## Milestones Implemented
 
 1. Bootstrap React + TypeScript + Vite app.

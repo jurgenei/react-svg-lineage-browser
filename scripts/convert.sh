@@ -1,9 +1,4 @@
-FLAGS="-p xppr --autoseed --autosink"
-DIR=/Users/cs79en/Developer/Projects/lineage/projects/parsing/build/json/
-python3 bippr_tool.py $FLAGS -i $DIR/buss.json -o ../build/buss.ppr.json
-python3 bippr_tool.py $FLAGS -i $DIR/cons.json -o ../build/cons.ppr.json
-python3 bippr_tool.py $FLAGS -i $DIR/dsa.json  --o ../build/dsa.ppr.json
-python3 bippr_tool.py $FLAGS -i $DIR/sdp.json  --o ../build/sdp.ppr.json
+
 
 CMDDIR=$(cd $(dirname $0); pwd)
 FLAGS="-p xppr --autoseed --autosink  --resolution 0.03"

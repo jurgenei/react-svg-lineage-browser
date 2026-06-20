@@ -129,7 +129,7 @@ export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphP
   const visibleGraph = useMemo(() => buildVisibleGraph(data, collapsedGroups), [data, collapsedGroups]);
   const { nodes, links } = useForceLayout(visibleGraph.nodes, visibleGraph.links, width, height, groupOrder, nodeSizes);
 
-  const nodesWithStacks = useMemo(() => placeUnconnectedNodes(nodes, links, width, height), [nodes, links, width, height]);
+   const nodesWithStacks = useMemo(() => arrangeComponentsBySize(nodes, links, width, height), [nodes, links, width, height]);
 
   const nodesWithManualPositions = useMemo(() => {
     if (manualPositions.size === 0) {
@@ -1146,67 +1146,118 @@ function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
 }
 
-function placeUnconnectedNodes(nodes: SimNode[], links: SimLink[], width: number, height: number): SimNode[] {
+interface ComponentGroup {
+  id: number;
+  nodeIds: Set<string>;
+  nodes: SimNode[];
+  minX: number;
+  maxX: number;
+  minY: number;
+  maxY: number;
+  width: number;
+  height: number;
+}
+
+function arrangeComponentsBySize(nodes: SimNode[], links: SimLink[], width: number, height: number): SimNode[] {
   if (!nodes.length) {
     return nodes;
   }
 
-  const degree = new Map<string, number>();
+  // Group nodes by connected_component_id
+  const componentMap = new Map<number, ComponentGroup>();
+  
   for (const node of nodes) {
-    degree.set(node.id, 0);
-  }
-  for (const link of links) {
-    const sourceId = typeof link.source === 'string' ? link.source : link.source.id;
-    const targetId = typeof link.target === 'string' ? link.target : link.target.id;
-    degree.set(sourceId, (degree.get(sourceId) ?? 0) + 1);
-    degree.set(targetId, (degree.get(targetId) ?? 0) + 1);
+    const compId = node.connected_component_id ?? -1;
+    if (!componentMap.has(compId)) {
+      componentMap.set(compId, {
+        id: compId,
+        nodeIds: new Set(),
+        nodes: [],
+        minX: Number.POSITIVE_INFINITY,
+        maxX: Number.NEGATIVE_INFINITY,
+        minY: Number.POSITIVE_INFINITY,
+        maxY: Number.NEGATIVE_INFINITY,
+        width: 0,
+        height: 0,
+      });
+    }
+    const comp = componentMap.get(compId)!;
+    comp.nodeIds.add(node.id);
+    comp.nodes.push(node);
+    comp.minX = Math.min(comp.minX, node.x);
+    comp.maxX = Math.max(comp.maxX, node.x);
+    comp.minY = Math.min(comp.minY, node.y);
+    comp.maxY = Math.max(comp.maxY, node.y);
   }
 
-  const isolated = nodes
-    .filter((node) => !node.isCluster && (degree.get(node.id) ?? 0) === 0)
-    .slice()
-    .sort((a, b) => a.label.localeCompare(b.label));
-
-  if (!isolated.length) {
-    return nodes;
+  // Calculate bounding boxes
+  for (const comp of componentMap.values()) {
+    comp.width = (comp.maxX - comp.minX) + 260; // node width (~190) + padding
+    comp.height = (comp.maxY - comp.minY) + 100; // node height (~48) + padding
   }
 
+  // Sort components by size (smallest first) except the largest
+  const components = Array.from(componentMap.values());
+  const largestComp = components.reduce((max, c) => (c.nodes.length > max.nodes.length ? c : max));
+  const smallerComps = components.filter((c) => c.id !== largestComp.id).sort((a, b) => a.nodes.length - b.nodes.length);
+
+  // Layout parameters
   const stackLeft = 24;
   const stackTop = 24;
-  const rowStep = 74;
-  const colStep = 220;
-  const cardWidth = 190;
-  const graphGap = 160;
-  const stackBottom = Math.max(stackTop + rowStep, height - 24);
+  const compGap = 16; // gap between small components
+  const mainGraphGap = 160; // gap between stacked components and main graph
+  const maxStackHeight = height - 48;
+  const maxStackWidth = Math.min(400, width * 0.25); // max width for stacked components
 
-  const positioned = new Map<string, { x: number; y: number }>();
-  let col = 0;
-  let y = stackTop;
+  // Position smaller components in a grid on the left/top
+  const positioned = new Map<number, { offsetX: number; offsetY: number }>();
+  let currentX = stackLeft;
+  let currentY = stackTop;
+  let maxYInColumn = stackTop;
 
-  for (const node of isolated) {
-    if (y + rowStep > stackBottom) {
-      col += 1;
-      y = stackTop;
+  for (const comp of smallerComps) {
+    // Check if component fits in current column
+    if (currentY + comp.height + compGap > maxStackHeight) {
+      // Move to next column
+      currentX += maxStackWidth + compGap;
+      currentY = stackTop;
+      maxYInColumn = stackTop;
     }
-    positioned.set(node.id, { x: stackLeft + col * colStep, y });
-    y += rowStep;
+
+    positioned.set(comp.id, { offsetX: currentX, offsetY: currentY });
+    currentY += comp.height + compGap;
+    maxYInColumn = Math.max(maxYInColumn, currentY);
   }
 
-  const rightMostStackX = stackLeft + col * colStep + cardWidth;
-  const connectedMinX = nodes
-    .filter((node) => !positioned.has(node.id))
-    .reduce((min, node) => Math.min(min, node.x), Number.POSITIVE_INFINITY);
-  const requiredConnectedMinX = Math.min(width - 200, rightMostStackX + graphGap);
-  const shiftX = Number.isFinite(connectedMinX) ? Math.max(0, requiredConnectedMinX - connectedMinX) : 0;
+  const rightMostStackX = currentX + maxStackWidth;
+  const mainGraphMinX = Math.min(width - 200, rightMostStackX + mainGraphGap);
 
+  // Shift main graph (largest component) to the right if needed
+  const largestMinX = largestComp.nodes.reduce((min, n) => Math.min(min, n.x), Number.POSITIVE_INFINITY);
+  const shiftX = Number.isFinite(largestMinX) ? Math.max(0, mainGraphMinX - largestMinX) : 0;
+
+  // Apply positioning
   return nodes.map((node) => {
-    const stackPos = positioned.get(node.id);
-    if (stackPos) {
-      return { ...node, x: stackPos.x, y: stackPos.y };
+    const compId = node.connected_component_id ?? -1;
+    
+    // If node is in a smaller component, reposition it within that component's bounds
+    if (compId !== largestComp.id && positioned.has(compId)) {
+      const comp = componentMap.get(compId)!;
+      const offset = positioned.get(compId)!;
+      const relativeX = node.x - comp.minX;
+      const relativeY = node.y - comp.minY;
+      return {
+        ...node,
+        x: offset.offsetX + relativeX + 20,
+        y: offset.offsetY + relativeY + 20,
+      };
     }
+
+    // Largest component (main graph) gets shifted right if needed
     if (shiftX > 0) {
       return { ...node, x: node.x + shiftX };
     }
+
     return node;
   });
 }

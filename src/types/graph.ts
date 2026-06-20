@@ -10,6 +10,7 @@ export interface GraphNode {
   directionality: Directionality;
   xppr?: number | string;
   ycluster?: number | string;
+  connected_component_id?: number;
   metadata?: Record<string, string | number | boolean | null | undefined>;
 }
 
