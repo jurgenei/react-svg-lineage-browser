@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { select, zoom, zoomIdentity, type D3ZoomEvent, type ZoomBehavior, type ZoomTransform } from 'd3';
-import type { GraphData, SimLink, SimNode } from '../types/graph';
+import type { GraphData, LayoutEngine, SimLink, SimNode } from '../types/graph';
 import { useForceLayout } from '../hooks/useForceLayout';
 import { buildVisibleGraph } from '../utils/graph';
 import { getCategoryColor } from '../utils/categoryConfig';
@@ -9,6 +9,7 @@ interface LineageGraphProps {
   data: GraphData;
   width?: number;
   height?: number;
+  layoutEngine?: LayoutEngine;
 }
 
 interface EdgeRenderItem {
@@ -34,6 +35,7 @@ interface LineJumpPoint {
 
 interface GraphUiPrefs {
   focusMode: boolean;
+  focusDimStrength: number;
   showDirectEdges: boolean;
   orthogonalPorts: boolean;
   routingMode: 'smooth' | 'manhattan';
@@ -89,7 +91,7 @@ function isIdentityTransform(t: ZoomTransform): boolean {
   return Math.abs(t.x) < 1e-6 && Math.abs(t.y) < 1e-6 && Math.abs(t.k - 1) < 1e-6;
 }
 
-export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphProps) {
+export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 'auto' }: LineageGraphProps) {
   const initialPrefsRef = useRef<Partial<GraphUiPrefs> | null>(null);
   if (initialPrefsRef.current === null) {
     initialPrefsRef.current = readGraphUiPrefs();
@@ -100,6 +102,13 @@ export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphP
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(initialPrefs.selectedNodeId ?? null);
   const [focusMode, setFocusMode] = useState(initialPrefs.focusMode ?? false);
+  const [focusDimStrength, setFocusDimStrength] = useState(() => {
+    const stored = initialPrefs.focusDimStrength;
+    if (typeof stored === 'number' && Number.isFinite(stored)) {
+      return Math.max(0, Math.min(100, stored));
+    }
+    return 85;
+  });
   const [showDirectEdges, setShowDirectEdges] = useState(initialPrefs.showDirectEdges ?? false);
   const [orthogonalPorts, setOrthogonalPorts] = useState(initialPrefs.orthogonalPorts ?? true);
   const [routingMode, setRoutingMode] = useState<'smooth' | 'manhattan'>(initialPrefs.routingMode ?? 'smooth');
@@ -202,7 +211,7 @@ export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphP
   }, [data.nodes]);
 
   const visibleGraph = useMemo(() => buildVisibleGraph(data, collapsedGroups), [data, collapsedGroups]);
-  const { nodes, links } = useForceLayout(visibleGraph.nodes, visibleGraph.links, width, height, groupOrder, nodeSizes);
+  const { nodes, links } = useForceLayout(visibleGraph.nodes, visibleGraph.links, width, height, groupOrder, nodeSizes, layoutEngine);
 
    const nodesWithStacks = useMemo(() => arrangeComponentsBySize(nodes, links, width, height), [nodes, links, width, height]);
 
@@ -282,6 +291,11 @@ export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphP
   }, [links, cullingEnabled, visibleNodeIds]);
 
   const pivotNodeId = selectedNodeId ?? hoveredNodeId;
+  const dimRatio = focusDimStrength / 100;
+  const baseDimmedNodeOpacity = 0.3;
+  const baseDimmedEdgeOpacity = 0.07;
+  const dimmedNodeOpacity = baseDimmedNodeOpacity * (1 - dimRatio);
+  const dimmedEdgeOpacity = baseDimmedEdgeOpacity * (1 - dimRatio);
 
   const highlightState = useMemo(() => {
     if (!focusMode || !pivotNodeId) {
@@ -657,6 +671,7 @@ export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphP
     }
     const prefs: GraphUiPrefs = {
       focusMode,
+      focusDimStrength,
       showDirectEdges,
       orthogonalPorts,
       routingMode,
@@ -673,7 +688,7 @@ export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphP
     } catch {
       // Ignore storage quota/privacy mode errors and keep UI responsive.
     }
-  }, [focusMode, showDirectEdges, orthogonalPorts, routingMode, edgeMode, showHelpPanel, showLegendPanel, helpPanelPos, legendPanelPos, transform, selectedNodeId]);
+  }, [focusMode, focusDimStrength, showDirectEdges, orthogonalPorts, routingMode, edgeMode, showHelpPanel, showLegendPanel, helpPanelPos, legendPanelPos, transform, selectedNodeId]);
 
   useEffect(() => {
     if (!dragPanelState) {
@@ -816,8 +831,18 @@ export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphP
 
   // Auto-fit viewport on first load or data change
   const hasInitialFitRef = useRef(!isIdentityTransform(transform));
+  const lastNodeCountRef = useRef(0);
+  
   useEffect(() => {
-    if (!svgRef.current || !zoomBehaviorRef.current || hasInitialFitRef.current || nodesWithManualPositions.length === 0) {
+    // Reset fit flag if node count changed significantly (e.g., new file loaded)
+    const currentNodeCount = nodesWithManualPositions.length;
+    const nodeCountChanged = Math.abs(currentNodeCount - lastNodeCountRef.current) > Math.max(5, currentNodeCount * 0.1);
+    if (nodeCountChanged) {
+      hasInitialFitRef.current = false;
+      lastNodeCountRef.current = currentNodeCount;
+    }
+
+    if (!svgRef.current || !zoomBehaviorRef.current || hasInitialFitRef.current || currentNodeCount === 0) {
       return;
     }
 
@@ -977,7 +1002,11 @@ export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphP
         type="button"
         key={node.id}
         className={`node-card ${node.type} ${faded ? 'node-dim' : ''} ${selectedNodeId === node.id ? 'node-selected' : ''} ${isPivot ? 'node-pivot' : ''} ${isNeighbor ? 'node-neighbor' : ''} ${draggingNodeId === node.id ? 'node-dragging' : ''}`}
-        style={{ transform: `translate(${node.x}px, ${node.y}px)`, backgroundColor: getCategoryColor(node.dominant_category) }}
+        style={{
+          transform: `translate(${node.x}px, ${node.y}px)`,
+          backgroundColor: getCategoryColor(node.dominant_category),
+          opacity: faded ? dimmedNodeOpacity : undefined
+        }}
         onPointerDown={(event) => {
           if (node.type !== 'table' || !stageRef.current) {
             return;
@@ -1076,7 +1105,7 @@ export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphP
         <path
           d={pathD}
           className={`edge ${item.edgeTypeClass} ${item.dirClass} ${item.faded ? 'edge-dim' : ''} ${item.showDirectStyling ? 'edge-direct' : ''}`}
-          style={{ strokeWidth: item.strokeWidth }}
+          style={{ strokeWidth: item.strokeWidth, opacity: item.faded ? dimmedEdgeOpacity : undefined }}
           markerStart="url(#arrow-start-dot)"
           markerEnd="url(#arrow-end)"
         >
@@ -1095,7 +1124,7 @@ export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphP
             <path
               d={jumpArcPath}
               className={`edge ${item.edgeTypeClass} ${item.dirClass} ${item.faded ? 'edge-dim' : ''} ${item.showDirectStyling ? 'edge-direct' : ''}`}
-              style={{ strokeWidth: item.strokeWidth }}
+              style={{ strokeWidth: item.strokeWidth, opacity: item.faded ? dimmedEdgeOpacity : undefined }}
               fill="none"
               strokeLinecap="round"
               pointerEvents="none"
@@ -1137,6 +1166,19 @@ export function LineageGraph({ data, width = 1400, height = 820 }: LineageGraphP
         <button onClick={() => setCollapsedGroups(new Set(groupOrder))}>Collapse all groups</button>
         <button onClick={() => setCollapsedGroups(new Set())}>Expand all groups</button>
         <button onClick={() => setFocusMode((v) => !v)}>{focusMode ? 'Disable focus mode' : 'Enable focus mode'}</button>
+        <label style={{ opacity: focusMode ? 1 : 0.5, pointerEvents: focusMode ? 'auto' : 'none' }}>
+          Focus dim
+          <input
+            type="range"
+            min={0}
+            max={100}
+            step={1}
+            value={focusDimStrength}
+            onChange={(e) => setFocusDimStrength(Number(e.target.value))}
+            disabled={!focusMode}
+          />
+          <span>{focusDimStrength}%</span>
+        </label>
         <label style={{ opacity: focusMode ? 1 : 0.5, pointerEvents: focusMode ? 'auto' : 'none' }}>
           <input type="checkbox" checked={showDirectEdges} onChange={(e) => setShowDirectEdges(e.target.checked)} disabled={!focusMode} />
           Show direct edges

@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { useEffect } from 'react';
 import { LineageGraph } from './components/LineageGraph';
-import type { GraphData } from './types/graph';
+import type { GraphData, LayoutEngine } from './types/graph';
 import { parsePlainJsonGraph } from './utils/plainJsonGraph';
 
 type AppTheme = 'light' | 'dark';
@@ -10,6 +10,7 @@ const THEME_STORAGE_KEY = 'lineage.exploring.theme.v1';
 export default function App() {
   const [dimensions, setDimensions] = useState({ width: 5600, height: 3280 });
   const [graphData, setGraphData] = useState<GraphData>({ nodes: [], links: [] });
+  const [layoutEngine, setLayoutEngine] = useState<LayoutEngine>('auto');
   const [fileName, setFileName] = useState<string | null>(null);
   const [parseError, setParseError] = useState<string | null>(null);
   const [theme, setTheme] = useState<AppTheme>(() => {
@@ -63,6 +64,14 @@ export default function App() {
             </select>
           </label>
           <label>
+            Layout:
+            <select value={layoutEngine} onChange={(e) => setLayoutEngine(e.target.value as LayoutEngine)}>
+              <option value="auto">auto</option>
+              <option value="webgpu">webgpu</option>
+              <option value="cpu">cpu</option>
+            </select>
+          </label>
+          <label>
             Load graph JSON:
             <input
               type="file"
@@ -91,7 +100,7 @@ export default function App() {
         </div>
       </header>
 
-      <LineageGraph data={graphData} width={dimensions.width} height={dimensions.height} />
+      <LineageGraph data={graphData} width={dimensions.width} height={dimensions.height} layoutEngine={layoutEngine} />
     </main>
   );
 }
