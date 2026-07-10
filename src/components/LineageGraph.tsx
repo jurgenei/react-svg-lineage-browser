@@ -1,8 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { select, zoom, zoomIdentity, type D3ZoomEvent, type ZoomBehavior, type ZoomTransform } from 'd3';
+import {
+  easeCubicInOut,
+  easeCubicOut,
+  select,
+  zoom,
+  zoomIdentity,
+  type D3ZoomEvent,
+  type ZoomBehavior,
+  type ZoomTransform
+} from 'd3';
 import type { GraphData, LayoutEngine, SimLink, SimNode } from '../types/graph';
 import { useForceLayout } from '../hooks/useForceLayout';
-import { buildVisibleGraph } from '../utils/graph';
+import { buildVisibleGraph, collectNeighborhood } from '../utils/graph';
 import { getCategoryColor } from '../utils/categoryConfig';
 
 interface LineageGraphProps {
@@ -26,6 +35,7 @@ interface EdgeRenderItem {
   faded: boolean;
   isDirect: boolean;
   showDirectStyling: boolean;
+  isBidirectionalBundle: boolean;
 }
 
 interface LineJumpPoint {
@@ -34,7 +44,6 @@ interface LineJumpPoint {
 }
 
 interface GraphUiPrefs {
-  focusMode: boolean;
   focusDimStrength: number;
   showDirectEdges: boolean;
   orthogonalPorts: boolean;
@@ -98,17 +107,16 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
   }
   const initialPrefs = initialPrefsRef.current;
 
-  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => new Set(defaultCollapsedGroups(data)));
-  const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
-  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(initialPrefs.selectedNodeId ?? null);
-  const [focusMode, setFocusMode] = useState(initialPrefs.focusMode ?? false);
-  const [focusDimStrength, setFocusDimStrength] = useState(() => {
-    const stored = initialPrefs.focusDimStrength;
-    if (typeof stored === 'number' && Number.isFinite(stored)) {
-      return Math.max(0, Math.min(100, stored));
-    }
-    return 85;
-  });
+   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => new Set(defaultCollapsedGroups(data)));
+   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
+   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(initialPrefs.selectedNodeId ?? null);
+   const [focusDimStrength, setFocusDimStrength] = useState(() => {
+     const stored = initialPrefs.focusDimStrength;
+     if (typeof stored === 'number' && Number.isFinite(stored)) {
+       return Math.max(0, Math.min(100, stored));
+     }
+     return 85;
+   });
   const [showDirectEdges, setShowDirectEdges] = useState(initialPrefs.showDirectEdges ?? false);
   const [orthogonalPorts, setOrthogonalPorts] = useState(initialPrefs.orthogonalPorts ?? true);
   const [routingMode, setRoutingMode] = useState<'smooth' | 'manhattan'>(initialPrefs.routingMode ?? 'smooth');
@@ -122,6 +130,8 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
   const [tableMatches, setTableMatches] = useState<string[]>([]);
   const [tableMatchIndex, setTableMatchIndex] = useState(-1);
   const [pendingFocusId, setPendingFocusId] = useState<string | null>(null);
+  const [localRootNodeId, setLocalRootNodeId] = useState<string | null>(null);
+  const [isLocalContext, setIsLocalContext] = useState(false);
   const [manualPositions, setManualPositions] = useState<Map<string, { x: number; y: number }>>(new Map());
   const [draggingNodeId, setDraggingNodeId] = useState<string | null>(null);
   const [nodeSizes, setNodeSizes] = useState<Map<string, { width: number; height: number }>>(new Map());
@@ -133,6 +143,11 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
   const nodeElementsRef = useRef<Map<string, HTMLButtonElement>>(new Map());
   const nodeObserversRef = useRef<Map<string, ResizeObserver>>(new Map());
   const nodeRefCallbacksRef = useRef<Map<string, (element: HTMLButtonElement | null) => void>>(new Map());
+  const preLocalTransformRef = useRef<ZoomTransform | null>(null);
+  const pendingFocusDurationRef = useRef(280);
+  const dragStartClientRef = useRef<{ x: number; y: number } | null>(null);
+  const dragMovedRef = useRef(false);
+  const suppressNextNodeClickRef = useRef(false);
   const [dragPanelState, setDragPanelState] = useState<DragPanelState | null>(null);
 
   const registerNodeElement = useCallback((nodeId: string, element: HTMLButtonElement | null) => {
@@ -211,7 +226,38 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
   }, [data.nodes]);
 
   const visibleGraph = useMemo(() => buildVisibleGraph(data, collapsedGroups), [data, collapsedGroups]);
-  const { nodes, links } = useForceLayout(visibleGraph.nodes, visibleGraph.links, width, height, groupOrder, nodeSizes, layoutEngine);
+  const activeGraph = useMemo(() => {
+    if (!isLocalContext || !localRootNodeId) {
+      return visibleGraph;
+    }
+    const relatedNodeIds = collectNeighborhood(visibleGraph, localRootNodeId);
+    const nodes = visibleGraph.nodes.filter((node) => relatedNodeIds.has(node.id));
+    const links = visibleGraph.links.filter((link) => {
+      const src = typeof link.source === 'string' ? link.source : link.source.id;
+      const dst = typeof link.target === 'string' ? link.target : link.target.id;
+      return relatedNodeIds.has(src) && relatedNodeIds.has(dst);
+    });
+    return { nodes, links };
+  }, [visibleGraph, isLocalContext, localRootNodeId]);
+  const { nodes, links } = useForceLayout(
+    activeGraph.nodes,
+    activeGraph.links,
+    width,
+    height,
+    groupOrder,
+    nodeSizes,
+    layoutEngine,
+    {
+      isLocalContext,
+      localRootNodeId
+    }
+  );
+  const localRootNodeLabel = useMemo(() => {
+    if (!localRootNodeId) {
+      return '';
+    }
+    return visibleGraph.nodes.find((node) => node.id === localRootNodeId)?.label ?? localRootNodeId;
+  }, [visibleGraph.nodes, localRootNodeId]);
 
    const nodesWithStacks = useMemo(() => arrangeComponentsBySize(nodes, links, width, height), [nodes, links, width, height]);
 
@@ -290,76 +336,42 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
     });
   }, [links, cullingEnabled, visibleNodeIds]);
 
-  const pivotNodeId = selectedNodeId ?? hoveredNodeId;
-  const dimRatio = focusDimStrength / 100;
-  const baseDimmedNodeOpacity = 0.3;
-  const baseDimmedEdgeOpacity = 0.07;
-  const dimmedNodeOpacity = baseDimmedNodeOpacity * (1 - dimRatio);
-  const dimmedEdgeOpacity = baseDimmedEdgeOpacity * (1 - dimRatio);
+   const pivotNodeId = selectedNodeId;
+   const dimRatio = focusDimStrength / 100;
+   // 0% keeps everything fully visible; 100% fully hides dimmed items.
+   const dimmedNodeOpacity = 1 - dimRatio;
+   const dimmedEdgeOpacity = 1 - dimRatio;
 
-  const highlightState = useMemo(() => {
-    if (!focusMode || !pivotNodeId) {
-      return null;
-    }
-    const related = new Set<string>([pivotNodeId]);
-    const directLinks = new Set<string>();
-    for (const link of links) {
-      const src = typeof link.source === 'string' ? link.source : link.source.id;
-      const dst = typeof link.target === 'string' ? link.target : link.target.id;
-      if (src === pivotNodeId || dst === pivotNodeId) {
-        related.add(src);
-        related.add(dst);
-        directLinks.add(`${src}->${dst}`);
-      }
-    }
-    return { related, directLinks };
-  }, [focusMode, pivotNodeId, links]);
+   const highlightState = useMemo(() => {
+     if (!pivotNodeId) {
+       return null;
+     }
+     const related = new Set<string>([pivotNodeId]);
+     const directLinks = new Set<string>();
+     for (const link of links) {
+       const src = typeof link.source === 'string' ? link.source : link.source.id;
+       const dst = typeof link.target === 'string' ? link.target : link.target.id;
+       if (src === pivotNodeId || dst === pivotNodeId) {
+         related.add(src);
+         related.add(dst);
+         directLinks.add(`${src}->${dst}`);
+       }
+     }
+     return { related, directLinks };
+   }, [pivotNodeId, links]);
 
-  const dimSet = useMemo(() => {
-    if (focusMode) {
-      const pivot = selectedNodeId ?? hoveredNodeId;
-      if (!pivot) {
-        return null;
-      }
-      return highlightState?.related ?? null;
-    }
-    if (!selectedNodeId) {
-      return null;
-    }
-    const related = new Set<string>([selectedNodeId]);
-    for (const link of links) {
-      const src = typeof link.source === 'string' ? link.source : link.source.id;
-      const dst = typeof link.target === 'string' ? link.target : link.target.id;
-      if (src === selectedNodeId || dst === selectedNodeId) {
-        related.add(src);
-        related.add(dst);
-      }
-    }
-    return related;
-  }, [focusMode, selectedNodeId, hoveredNodeId, highlightState, links]);
+   const dimSet = useMemo(() => {
+     // Only dim when a node is explicitly selected.
+     if (!selectedNodeId) {
+       return null;
+     }
+     return highlightState?.related ?? null;
+   }, [selectedNodeId, highlightState]);
 
-  const highlightedNodeIds = useMemo(() => {
-    if (focusMode) {
-      return highlightState?.related ?? new Set<string>();
-    }
-
-    const highlighted = new Set<string>();
-    if (!selectedNodeId) {
-      return highlighted;
-    }
-
-    highlighted.add(selectedNodeId);
-    for (const link of links) {
-      const src = typeof link.source === 'string' ? link.source : link.source.id;
-      const dst = typeof link.target === 'string' ? link.target : link.target.id;
-      if (src === selectedNodeId || dst === selectedNodeId) {
-        highlighted.add(src);
-        highlighted.add(dst);
-      }
-    }
-
-    return highlighted;
-  }, [focusMode, highlightState, selectedNodeId, links]);
+   const highlightedNodeIds = useMemo(() => {
+     // Focus mode is always active.
+     return highlightState?.related ?? new Set<string>();
+   }, [highlightState]);
 
   const highlightedRenderNodes = useMemo(
     () => renderNodes.filter((node) => highlightedNodeIds.has(node.id)),
@@ -375,6 +387,7 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
     const items: EdgeRenderItem[] = [];
 
     const grouped = new Map<string, SimLink[]>();
+    const labelGrouped = new Map<string, SimLink[]>();
     for (const link of renderLinks) {
       const sourceId = typeof link.source === 'string' ? link.source : link.source.id;
       const targetId = typeof link.target === 'string' ? link.target : link.target.id;
@@ -382,7 +395,40 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
       const arr = grouped.get(key) ?? [];
       arr.push(link);
       grouped.set(key, arr);
+
+      const normalizedLabel = (link.label ?? link.type ?? '').trim().toLowerCase();
+      if (normalizedLabel) {
+        const undirected = sourceId < targetId ? `${sourceId}|${targetId}` : `${targetId}|${sourceId}`;
+        const labelKey = `${undirected}|${normalizedLabel}`;
+        const labelGroup = labelGrouped.get(labelKey) ?? [];
+        labelGroup.push(link);
+        labelGrouped.set(labelKey, labelGroup);
+      }
     }
+
+    const bidirectionalBundleKeys = new Set<string>();
+    for (const [labelKey, bundleLinks] of labelGrouped.entries()) {
+      const directions = new Set<string>();
+      for (const link of bundleLinks) {
+        const src = typeof link.source === 'string' ? link.source : link.source.id;
+        const dst = typeof link.target === 'string' ? link.target : link.target.id;
+        directions.add(`${src}->${dst}`);
+      }
+      if (directions.size < 2) {
+        continue;
+      }
+      const [pairKey] = labelKey.split('|').length >= 3
+        ? [labelKey.split('|').slice(0, 2).join('|')]
+        : [labelKey];
+      const [leftId, rightId] = pairKey.split('|');
+      if (!leftId || !rightId) {
+        continue;
+      }
+      bidirectionalBundleKeys.add(`${leftId}|${rightId}`);
+      bidirectionalBundleKeys.add(`${rightId}|${leftId}`);
+    }
+
+    const processedBundlePairs = new Set<string>();
 
     for (const [pairKey, bundle] of grouped.entries()) {
       const [sourceId, targetId] = pairKey.split('|');
@@ -392,30 +438,63 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
         continue;
       }
 
+      const reversePairKey = `${targetId}|${sourceId}`;
+      const isBidirectionalPair = bidirectionalBundleKeys.has(pairKey) && grouped.has(reversePairKey);
+      if (isBidirectionalPair) {
+        const undirectedKey = sourceId < targetId ? `${sourceId}|${targetId}` : `${targetId}|${sourceId}`;
+        if (processedBundlePairs.has(undirectedKey)) {
+          continue;
+        }
+        processedBundlePairs.add(undirectedKey);
+
+        const reverseLinks = grouped.get(reversePairKey) ?? [];
+        const mergedLinks = bundle.concat(reverseLinks);
+        const commonLabel = (bundle[0].label ?? bundle[0].type) || (reverseLinks[0]?.label ?? reverseLinks[0]?.type) || 'flow';
+        const isBundleSelected = Boolean(pivotNodeId && (sourceId === pivotNodeId || targetId === pivotNodeId));
+        const faded = Boolean(pivotNodeId && !isBundleSelected);
+        const totalWeight = mergedLinks.reduce((sum, link) => sum + (link.weight ?? 1), 0);
+        const strokeWidth = Math.min(12, 2 + Math.log2(totalWeight + 1) * 1.9);
+
+        items.push({
+          key: `${undirectedKey}:bundle`,
+          edgeKey: `${undirectedKey}:bundle`,
+          links: mergedLinks,
+          primaryLink: mergedLinks[0],
+          source,
+          target,
+          labelLines: [commonLabel],
+          strokeWidth,
+          edgeTypeClass: isBundleSelected ? 'edge-bundle-bidirectional-selected' : 'edge-bundle-bidirectional',
+          dirClass: isBundleSelected ? 'edge-flow-bidirectional' : '',
+          faded,
+          isDirect: isBundleSelected,
+          showDirectStyling: false,
+          isBidirectionalBundle: true
+        });
+        continue;
+      }
+
       const isDirect =
         highlightState?.directLinks.has(`${source.id}->${target.id}`) ||
         highlightState?.directLinks.has(`${target.id}->${source.id}`) ||
         false;
       const showDirectStyling = showDirectEdges && isDirect;
 
-      // Determine dirClass first
-      let dirClass = '';
-      if (pivotNodeId && isDirect) {
-        if (source.id === pivotNodeId) {
-          dirClass = 'edge-flow-outgoing';
-        } else if (target.id === pivotNodeId) {
-          dirClass = 'edge-flow-incoming';
-        }
-      }
+       // Determine dirClass first
+       let dirClass = '';
+       if (pivotNodeId && isDirect) {
+         if (source.id === pivotNodeId) {
+           dirClass = 'edge-flow-outgoing';
+         } else if (target.id === pivotNodeId) {
+           dirClass = 'edge-flow-incoming';
+         }
+       }
 
-      // In focus mode, fade all edges EXCEPT those with outgoing/incoming dirClass
-      let faded = false;
-      if (focusMode && pivotNodeId) {
-        faded = !dirClass; // Only keep non-faded if dirClass is set
-      } else if (dimSet) {
-        // In selection mode, use existing dimSet logic
-        faded = !(dimSet.has(source.id) && dimSet.has(target.id));
-      }
+       // In focus mode (always active), fade all edges EXCEPT those with outgoing/incoming dirClass or when no node selected
+       let faded = false;
+       if (pivotNodeId) {
+         faded = !dirClass; // Only keep non-faded if dirClass is set
+       }
 
       const totalWeight = bundle.reduce((sum, link) => sum + (link.weight ?? 1), 0);
       const baseStrokeWidth = Math.min(12, 2 + Math.log2(totalWeight + 1) * 1.9);
@@ -440,7 +519,8 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
         dirClass,
         faded,
         isDirect,
-        showDirectStyling
+        showDirectStyling,
+        isBidirectionalBundle: false
       });
     }
 
@@ -475,7 +555,10 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
     const all = displayedNonHighlightedEdgeItems.concat(displayedHighlightedEdgeItems);
     const items: EdgeRenderItem[] = [];
     for (const item of all) {
-      const isActive = item.dirClass === 'edge-flow-incoming' || item.dirClass === 'edge-flow-outgoing';
+      const isActive =
+        item.dirClass === 'edge-flow-incoming' ||
+        item.dirClass === 'edge-flow-outgoing' ||
+        item.dirClass === 'edge-flow-bidirectional';
       if (isActive || seen.has(item.key)) {
         continue;
       }
@@ -491,7 +574,10 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
     const all = displayedNonHighlightedEdgeItems.concat(displayedHighlightedEdgeItems);
     const items: EdgeRenderItem[] = [];
     for (const item of all) {
-      const isActive = item.dirClass === 'edge-flow-incoming' || item.dirClass === 'edge-flow-outgoing';
+      const isActive =
+        item.dirClass === 'edge-flow-incoming' ||
+        item.dirClass === 'edge-flow-outgoing' ||
+        item.dirClass === 'edge-flow-bidirectional';
       if (!isActive || seen.has(item.key)) {
         continue;
       }
@@ -500,6 +586,121 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
     }
     return items;
   }, [displayedNonHighlightedEdgeItems, displayedHighlightedEdgeItems]);
+
+  const groupedLabelState = useMemo(() => {
+    const GROUP_DELIM = '\u0001';
+    const suppressInlineLabels = new Set<string>();
+    const aggregatedLabels: Array<{ key: string; x: number; y: number; text: string; edgeTypeClass: string }> = [];
+
+    const pickDominantEdgeTypeClass = (items: EdgeRenderItem[]) => {
+      const counts = new Map<string, number>();
+      for (const item of items) {
+        counts.set(item.edgeTypeClass, (counts.get(item.edgeTypeClass) ?? 0) + 1);
+      }
+      let winner = 'edge-flow';
+      let maxCount = -1;
+      for (const [edgeTypeClass, count] of counts.entries()) {
+        if (count > maxCount) {
+          maxCount = count;
+          winner = edgeTypeClass;
+        }
+      }
+      return winner;
+    };
+
+    const pickRepresentativePoint = (items: EdgeRenderItem[], isOutgoing: boolean) => {
+      const points = items
+        .map((item) => {
+          const anchors = getAnchoredEndpoints(item.source, item.target, nodeSizes, 0, 1, orthogonalPorts);
+          const start = anchors.start;
+          const end = anchors.end;
+          const t = isOutgoing ? 0.22 : 0.78;
+          return {
+            x: start.x + (end.x - start.x) * t,
+            y: start.y + (end.y - start.y) * t
+          };
+        })
+        .filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
+
+      if (!points.length) {
+        return { x: 0, y: 0 };
+      }
+
+      const avgX = points.reduce((sum, point) => sum + point.x, 0) / points.length;
+      const avgY = points.reduce((sum, point) => sum + point.y, 0) / points.length;
+      let representative = points[0];
+      let bestDistance = Number.POSITIVE_INFINITY;
+      for (const point of points) {
+        const distance = Math.hypot(point.x - avgX, point.y - avgY);
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          representative = point;
+        }
+      }
+      return representative;
+    };
+
+    const outgoingGroups = new Map<string, EdgeRenderItem[]>();
+    const incomingGroups = new Map<string, EdgeRenderItem[]>();
+
+    for (const item of emphasizedEdgeItems) {
+      if (item.faded || item.isBidirectionalBundle || item.labelLines.length !== 1) {
+        continue;
+      }
+      const label = item.labelLines[0].trim();
+      if (!label) {
+        continue;
+      }
+      const outgoingKey = ['out', item.source.id, label].join(GROUP_DELIM);
+      const incomingKey = ['in', item.target.id, label].join(GROUP_DELIM);
+
+      const outArr = outgoingGroups.get(outgoingKey) ?? [];
+      outArr.push(item);
+      outgoingGroups.set(outgoingKey, outArr);
+
+      const inArr = incomingGroups.get(incomingKey) ?? [];
+      inArr.push(item);
+      incomingGroups.set(incomingKey, inArr);
+    }
+
+    for (const [groupKey, items] of outgoingGroups.entries()) {
+      if (items.length < 2) {
+        continue;
+      }
+      const [_, sourceId, label] = groupKey.split(GROUP_DELIM);
+      for (const item of items) {
+        suppressInlineLabels.add(item.key);
+      }
+      const representative = pickRepresentativePoint(items, true);
+      aggregatedLabels.push({
+        key: `group-out:${sourceId}:${label}`,
+        x: representative.x,
+        y: representative.y,
+        text: label,
+        edgeTypeClass: pickDominantEdgeTypeClass(items)
+      });
+    }
+
+    for (const [groupKey, items] of incomingGroups.entries()) {
+      if (items.length < 2) {
+        continue;
+      }
+      const [_, targetId, label] = groupKey.split(GROUP_DELIM);
+      for (const item of items) {
+        suppressInlineLabels.add(item.key);
+      }
+      const representative = pickRepresentativePoint(items, false);
+      aggregatedLabels.push({
+        key: `group-in:${targetId}:${label}`,
+        x: representative.x,
+        y: representative.y,
+        text: label,
+        edgeTypeClass: pickDominantEdgeTypeClass(items)
+      });
+    }
+
+    return { suppressInlineLabels, aggregatedLabels };
+  }, [emphasizedEdgeItems, nodeMap, nodeSizes, orthogonalPorts]);
 
   const manhattanLineJumps = useMemo(() => {
     const jumps = new Map<string, LineJumpPoint[]>();
@@ -665,30 +866,29 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
     }
   }, []);
 
-  useEffect(() => {
-    if (typeof window === 'undefined') {
-      return;
-    }
-    const prefs: GraphUiPrefs = {
-      focusMode,
-      focusDimStrength,
-      showDirectEdges,
-      orthogonalPorts,
-      routingMode,
-      edgeMode,
-      showHelpPanel,
-      showLegendPanel,
-      helpPanelPos,
-      legendPanelPos,
-      cameraTransform: { x: transform.x, y: transform.y, k: transform.k },
-      selectedNodeId
-    };
-    try {
-      window.localStorage.setItem(GRAPH_UI_PREFS_KEY, JSON.stringify(prefs));
-    } catch {
-      // Ignore storage quota/privacy mode errors and keep UI responsive.
-    }
-  }, [focusMode, focusDimStrength, showDirectEdges, orthogonalPorts, routingMode, edgeMode, showHelpPanel, showLegendPanel, helpPanelPos, legendPanelPos, transform, selectedNodeId]);
+   useEffect(() => {
+     if (typeof window === 'undefined') {
+       return;
+     }
+     const prefs: GraphUiPrefs = {
+       focusDimStrength,
+       showDirectEdges,
+       orthogonalPorts,
+       routingMode,
+       edgeMode,
+       showHelpPanel,
+       showLegendPanel,
+       helpPanelPos,
+       legendPanelPos,
+       cameraTransform: { x: transform.x, y: transform.y, k: transform.k },
+       selectedNodeId
+     };
+     try {
+       window.localStorage.setItem(GRAPH_UI_PREFS_KEY, JSON.stringify(prefs));
+     } catch {
+       // Ignore storage quota/privacy mode errors and keep UI responsive.
+     }
+   }, [focusDimStrength, showDirectEdges, orthogonalPorts, routingMode, edgeMode, showHelpPanel, showLegendPanel, helpPanelPos, legendPanelPos, transform, selectedNodeId]);
 
   useEffect(() => {
     if (!dragPanelState) {
@@ -739,7 +939,7 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
   }, []);
 
   useEffect(() => {
-    const validNodeIds = new Set(visibleGraph.nodes.map((n) => n.id));
+    const validNodeIds = new Set(activeGraph.nodes.map((n) => n.id));
     setSelectedNodeId((prev) => (prev && !validNodeIds.has(prev) ? null : prev));
     setPendingFocusId((prev) => (prev && !validNodeIds.has(prev) ? null : prev));
     setManualPositions((prev) => {
@@ -779,13 +979,21 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
         nodeRefCallbacksRef.current.delete(key);
       }
     }
-  }, [visibleGraph.nodes]);
+  }, [activeGraph.nodes]);
 
   useEffect(() => {
     function handlePointerMove(event: PointerEvent) {
       const state = dragStateRef.current;
       if (!state || !stageRef.current) {
         return;
+      }
+      const dragStart = dragStartClientRef.current;
+      if (dragStart && !dragMovedRef.current) {
+        const dx = event.clientX - dragStart.x;
+        const dy = event.clientY - dragStart.y;
+        if (Math.hypot(dx, dy) > 4) {
+          dragMovedRef.current = true;
+        }
       }
       const rect = stageRef.current.getBoundingClientRect();
       const worldX = (event.clientX - rect.left - transform.x) / transform.k;
@@ -802,6 +1010,14 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
 
     function handlePointerUp() {
       if (dragStateRef.current) {
+        if (dragMovedRef.current) {
+          suppressNextNodeClickRef.current = true;
+          window.setTimeout(() => {
+            suppressNextNodeClickRef.current = false;
+          }, 0);
+        }
+        dragMovedRef.current = false;
+        dragStartClientRef.current = null;
         dragStateRef.current = null;
         setDraggingNodeId(null);
       }
@@ -824,7 +1040,8 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
     if (!node) {
       return;
     }
-    panToNode(node, transform.k);
+    const duration = pendingFocusDurationRef.current;
+    panToNode(node, transform.k, duration);
     setSelectedNodeId(node.id);
     setPendingFocusId(null);
   }, [pendingFocusId, nodeMap, transform.k]);
@@ -935,7 +1152,7 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
     setPendingFocusId(nodeId);
   }
 
-  function panToNode(node: SimNode, zoomScale: number) {
+  function panToNode(node: SimNode, zoomScale: number, duration = 280) {
     if (!svgRef.current || !zoomBehaviorRef.current) {
       return;
     }
@@ -947,9 +1164,42 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
 
     select(svgRef.current)
       .transition()
-      .duration(280)
+      .duration(duration)
+      .ease(easeCubicOut)
       .call(zoomBehaviorRef.current.transform as never, targetTransform);
   }
+
+  const enterLocalContext = useCallback((nodeId: string) => {
+    if (!isLocalContext) {
+      preLocalTransformRef.current = transform;
+    }
+    setIsLocalContext(true);
+    setLocalRootNodeId(nodeId);
+    setSelectedNodeId(nodeId);
+    setHoveredNodeId(null);
+    pendingFocusDurationRef.current = 280;
+    setPendingFocusId(nodeId);
+  }, [isLocalContext, transform]);
+
+  const exitLocalContext = useCallback(() => {
+    if (!isLocalContext) {
+      return;
+    }
+    const restoreTransform = preLocalTransformRef.current;
+    setIsLocalContext(false);
+    setLocalRootNodeId(null);
+    setSelectedNodeId(null);
+    setHoveredNodeId(null);
+    preLocalTransformRef.current = null;
+    if (!restoreTransform || !svgRef.current || !zoomBehaviorRef.current) {
+      return;
+    }
+    select(svgRef.current)
+      .transition()
+      .duration(320)
+      .ease(easeCubicInOut)
+      .call(zoomBehaviorRef.current.transform as never, restoreTransform);
+  }, [isLocalContext]);
 
   function resetZoomView() {
     if (!svgRef.current || !zoomBehaviorRef.current) {
@@ -958,39 +1208,39 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
     select(svgRef.current)
       .transition()
       .duration(240)
+      .ease(easeCubicInOut)
       .call(zoomBehaviorRef.current.transform as never, zoomIdentity);
   }
 
-  useEffect(() => {
-    function onKeyDown(event: KeyboardEvent) {
-      const target = event.target;
-      const isTypingTarget =
-        target instanceof HTMLInputElement ||
-        target instanceof HTMLTextAreaElement ||
-        target instanceof HTMLSelectElement;
-      if (isTypingTarget) {
-        return;
-      }
+   useEffect(() => {
+     function onKeyDown(event: KeyboardEvent) {
+       const target = event.target;
+       const isTypingTarget =
+         target instanceof HTMLInputElement ||
+         target instanceof HTMLTextAreaElement ||
+         target instanceof HTMLSelectElement;
+       if (isTypingTarget) {
+         return;
+       }
 
-      if (event.key === 'Escape') {
-        setSelectedNodeId(null);
-        setHoveredNodeId(null);
-        return;
-      }
-      if (event.key === 'f' || event.key === 'F') {
-        event.preventDefault();
-        setFocusMode((v) => !v);
-        return;
-      }
-      if (event.key === 'r' || event.key === 'R') {
-        event.preventDefault();
-        resetZoomView();
-      }
-    }
+       if (event.key === 'Escape') {
+         if (isLocalContext) {
+           exitLocalContext();
+         } else {
+           setSelectedNodeId(null);
+           setHoveredNodeId(null);
+         }
+         return;
+       }
+       if (event.key === 'r' || event.key === 'R') {
+         event.preventDefault();
+         resetZoomView();
+       }
+     }
 
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, []);
+     window.addEventListener('keydown', onKeyDown);
+     return () => window.removeEventListener('keydown', onKeyDown);
+   }, [isLocalContext, exitLocalContext]);
 
   function renderNodeCard(node: SimNode) {
     const faded = dimSet ? !dimSet.has(node.id) : false;
@@ -1001,7 +1251,7 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
         ref={getNodeRefCallback(node.id)}
         type="button"
         key={node.id}
-        className={`node-card ${node.type} ${faded ? 'node-dim' : ''} ${selectedNodeId === node.id ? 'node-selected' : ''} ${isPivot ? 'node-pivot' : ''} ${isNeighbor ? 'node-neighbor' : ''} ${draggingNodeId === node.id ? 'node-dragging' : ''}`}
+        className={`node-card ${node.type} ${isLocalContext ? 'node-card-local' : ''} ${faded ? 'node-dim' : ''} ${selectedNodeId === node.id ? 'node-selected' : ''} ${isPivot ? 'node-pivot' : ''} ${isNeighbor ? 'node-neighbor' : ''} ${draggingNodeId === node.id ? 'node-dragging' : ''}`}
         style={{
           transform: `translate(${node.x}px, ${node.y}px)`,
           backgroundColor: getCategoryColor(node.dominant_category),
@@ -1021,11 +1271,17 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
             offsetX: worldX - node.x,
             offsetY: worldY - node.y
           };
+          dragStartClientRef.current = { x: event.clientX, y: event.clientY };
+          dragMovedRef.current = false;
           setDraggingNodeId(node.id);
         }}
         onMouseEnter={() => setHoveredNodeId(node.id)}
         onMouseLeave={() => setHoveredNodeId((id) => (id === node.id ? null : id))}
         onClick={() => {
+          if (suppressNextNodeClickRef.current) {
+            suppressNextNodeClickRef.current = false;
+            return;
+          }
           if (node.isCluster) {
             setCollapsedGroups((prev) => {
               const next = new Set(prev);
@@ -1038,7 +1294,7 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
             });
             return;
           }
-          setSelectedNodeId((prev) => (prev === node.id ? null : node.id));
+          enterLocalContext(node.id);
         }}
       >
         <div className="node-title">{node.label}</div>
@@ -1099,6 +1355,7 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
 
     const jumpPoints = manhattanLineJumps.get(item.key) ?? [];
     const jumpArcPath = jumpPointsToPath(jumpPoints, 6, 7);
+    const markerStart = item.isBidirectionalBundle ? 'url(#arrow-end)' : 'url(#arrow-start-dot)';
 
     return (
       <g key={item.key}>
@@ -1106,7 +1363,7 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
           d={pathD}
           className={`edge ${item.edgeTypeClass} ${item.dirClass} ${item.faded ? 'edge-dim' : ''} ${item.showDirectStyling ? 'edge-direct' : ''}`}
           style={{ strokeWidth: item.strokeWidth, opacity: item.faded ? dimmedEdgeOpacity : undefined }}
-          markerStart="url(#arrow-start-dot)"
+          markerStart={markerStart}
           markerEnd="url(#arrow-end)"
         >
           <title>{item.labelLines.join('\n')}</title>
@@ -1131,7 +1388,7 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
             />
           </>
         )}
-        {showLabel && item.labelLines.length > 0 && !item.faded && (
+        {showLabel && item.labelLines.length > 0 && !item.faded && !groupedLabelState.suppressInlineLabels.has(item.key) && (
           <g className="edge-label-group">
             <rect
               x={labelX - labelWidth / 2}
@@ -1160,29 +1417,27 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
     );
   }
 
-  return (
-    <div className="graph-shell">
-      <div className="toolbar">
-        <button onClick={() => setCollapsedGroups(new Set(groupOrder))}>Collapse all groups</button>
-        <button onClick={() => setCollapsedGroups(new Set())}>Expand all groups</button>
-        <button onClick={() => setFocusMode((v) => !v)}>{focusMode ? 'Disable focus mode' : 'Enable focus mode'}</button>
-        <label style={{ opacity: focusMode ? 1 : 0.5, pointerEvents: focusMode ? 'auto' : 'none' }}>
-          Focus dim
-          <input
-            type="range"
-            min={0}
-            max={100}
-            step={1}
-            value={focusDimStrength}
-            onChange={(e) => setFocusDimStrength(Number(e.target.value))}
-            disabled={!focusMode}
-          />
-          <span>{focusDimStrength}%</span>
-        </label>
-        <label style={{ opacity: focusMode ? 1 : 0.5, pointerEvents: focusMode ? 'auto' : 'none' }}>
-          <input type="checkbox" checked={showDirectEdges} onChange={(e) => setShowDirectEdges(e.target.checked)} disabled={!focusMode} />
-          Show direct edges
-        </label>
+   return (
+     <div className="graph-shell">
+       <div className="toolbar">
+         <button onClick={() => setCollapsedGroups(new Set(groupOrder))}>Collapse all groups</button>
+         <button onClick={() => setCollapsedGroups(new Set())}>Expand all groups</button>
+         <label>
+           Dim strength
+           <input
+             type="range"
+             min={0}
+             max={100}
+             step={1}
+             value={focusDimStrength}
+             onChange={(e) => setFocusDimStrength(Number(e.target.value))}
+           />
+           <span>{focusDimStrength}%</span>
+         </label>
+         <label>
+           <input type="checkbox" checked={showDirectEdges} onChange={(e) => setShowDirectEdges(e.target.checked)} />
+           Show direct edges
+         </label>
         <label>
           <input
             type="checkbox"
@@ -1232,30 +1487,37 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
          <span className="render-stats">
           render {renderNodes.length}/{nodes.length} nodes, {renderLinks.length}/{links.length} links
         </span>
+        {isLocalContext && localRootNodeLabel ? (
+          <span className="local-context-chip">Local: {localRootNodeLabel} (Esc/canvas to exit)</span>
+        ) : null}
         {selectedNodeId ? <span className="selected-label">Selected: {selectedNodeId}</span> : null}
       </div>
 
       <div
         ref={stageRef}
-        className="graph-stage"
+        className={`graph-stage ${isLocalContext ? 'local-mode' : ''}`}
         style={{ width, height }}
         onClick={(event) => {
           const target = event.target;
           if (target instanceof Element && target.closest('.node-card')) {
             return;
           }
+          if (isLocalContext) {
+            exitLocalContext();
+            return;
+          }
           setSelectedNodeId(null);
+          setHoveredNodeId(null);
         }}
       >
-        {showHelpPanel && (
-          <div className="overlay-panel overlay-help" style={{ left: helpPanelPos.x, top: helpPanelPos.y }}>
-            <div className="overlay-panel-drag-handle" onPointerDown={(e) => beginPanelDrag('help', e)}><strong>Shortcuts</strong></div>
-            <div><kbd>Esc</kbd> clear selection</div>
-            <div><kbd>F</kbd> toggle focus mode</div>
-            <div><kbd>R</kbd> reset zoom</div>
-            <div>Click canvas to clear current node selection.</div>
-          </div>
-        )}
+         {showHelpPanel && (
+           <div className="overlay-panel overlay-help" style={{ left: helpPanelPos.x, top: helpPanelPos.y }}>
+             <div className="overlay-panel-drag-handle" onPointerDown={(e) => beginPanelDrag('help', e)}><strong>Shortcuts</strong></div>
+             <div><kbd>Esc</kbd> clear selection</div>
+             <div><kbd>R</kbd> reset zoom</div>
+             <div>Click canvas to clear current node selection. Use Dim strength slider to control node fading when a node is selected.</div>
+           </div>
+         )}
         {showLegendPanel && (
           <div className="overlay-panel overlay-legend" style={{ left: legendPanelPos.x, top: legendPanelPos.y }}>
             <div className="overlay-panel-drag-handle" onPointerDown={(e) => beginPanelDrag('legend', e)}><strong>Legend</strong></div>
@@ -1291,6 +1553,27 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
         <svg width={width} height={height} className="edge-layer edge-layer-highlight">
           <g transform={transform.toString()}>
             {emphasizedEdgeItems.map((item) => renderEdge(item, true))}
+            {groupedLabelState.aggregatedLabels.map((label) => (
+              <g className="edge-label-group" key={label.key}>
+                <rect
+                  x={label.x - Math.max(42, label.text.length * 3.2 + 9)}
+                  y={label.y - 10}
+                  width={Math.max(84, label.text.length * 6.4 + 18)}
+                  height={20}
+                  rx="4"
+                  ry="4"
+                  className={`edge-label-bg ${label.edgeTypeClass}`}
+                />
+                <text
+                  x={label.x}
+                  y={label.y + 3}
+                  textAnchor="middle"
+                  className="edge-label"
+                >
+                  {label.text}
+                </text>
+              </g>
+            ))}
           </g>
         </svg>
       </div>

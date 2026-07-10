@@ -8,6 +8,11 @@ interface LayoutResult {
   links: SimLink[];
 }
 
+interface ForceLayoutOptions {
+  isLocalContext?: boolean;
+  localRootNodeId?: string | null;
+}
+
 export function useForceLayout(
   nodes: SimNode[],
   links: SimLink[],
@@ -15,9 +20,16 @@ export function useForceLayout(
   height: number,
   groupOrder: string[],
   nodeSizes: Map<string, { width: number; height: number }>,
-  layoutEngine: LayoutEngine = 'auto'
+  layoutEngine: LayoutEngine = 'auto',
+  options: ForceLayoutOptions = {}
 ): LayoutResult {
   const [layout, setLayout] = useState<LayoutResult>({ nodes, links });
+  const isLocalContext = Boolean(options.isLocalContext && options.localRootNodeId);
+  const localRootNodeId = options.localRootNodeId ?? null;
+  const localRoleMap = useMemo(
+    () => computeLocalRoleMap(links, isLocalContext ? localRootNodeId : null),
+    [links, isLocalContext, localRootNodeId]
+  );
 
   const seededNodes = useMemo(() => {
     const clone = nodes.map((node) => ({ ...node }));
@@ -27,10 +39,29 @@ export function useForceLayout(
     const topY = 48;
     const bottomY = Math.max(topY + 120, height - 48);
 
-    for (const node of clone) {
+      for (const node of clone) {
       const nodeDepth = depth.get(node.id) ?? -1;
       node.depth = nodeDepth;
       const normalizedDepth = nodeDepth >= 0 ? nodeDepth / Math.max(1, maxDepth(depth)) : 0.5;
+
+        const localRole = localRoleMap.get(node.id) ?? 'other';
+        if (isLocalContext && localRootNodeId) {
+          if (node.id === localRootNodeId) {
+            node.x = width * 0.5;
+          } else if (localRole === 'in') {
+            node.x = width * 0.27;
+          } else if (localRole === 'out') {
+            node.x = width * 0.73;
+          } else {
+            node.x = width * 0.5;
+          }
+          node.fx = null;
+          const categoryYNorm = getCategoryYPosition(node.dominant_category);
+          const categoryY = topY + categoryYNorm * (bottomY - topY);
+          node.y = categoryY;
+          node.fy = null;
+          continue;
+        }
 
       const xByDepth = 80 + normalizedDepth * Math.max(120, width - 160);
       const xByDirectionality =
@@ -65,7 +96,7 @@ export function useForceLayout(
       }
 
       return clone;
-    }, [nodes, links, width, height, groupOrder]);
+    }, [nodes, links, width, height, groupOrder, isLocalContext, localRootNodeId, localRoleMap]);
 
   useEffect(() => {
     if (!seededNodes.length) {
@@ -139,7 +170,12 @@ export function useForceLayout(
           const weight = d.weight ?? 1;
           return base + Math.min(22, weight * (isLarge ? 1.5 : 2));
         })
-        .strength(0.15);
+        .strength((d) => {
+          if (isLocalContext && localRootNodeId && !linkTouchesRoot(d, localRootNodeId)) {
+            return 0;
+          }
+          return isLocalContext ? 0.22 : 0.15;
+        });
 
       return forceSimulation(seededNodes)
         .force('charge', forceManyBody().strength(chargeStrength))
@@ -153,6 +189,19 @@ export function useForceLayout(
         .force(
           'x',
           forceX<SimNode>((node) => {
+            if (isLocalContext && localRootNodeId) {
+              if (node.id === localRootNodeId) {
+                return width * 0.5;
+              }
+              const role = localRoleMap.get(node.id) ?? 'other';
+              if (role === 'in') {
+                return width * 0.27;
+              }
+              if (role === 'out') {
+                return width * 0.73;
+              }
+              return width * 0.5;
+            }
             const xppr = parseXppr(node.xppr);
             if (xppr !== null) {
               return xpprToX(xppr, 40, Math.max(160, width - 220));
@@ -166,7 +215,16 @@ export function useForceLayout(
                   ? width * 0.86
                   : width * 0.5;
             return 0.65 * depthX + 0.35 * directionalX;
-          }).strength((node) => (parseXppr(node.xppr) !== null ? 0.94 : 0.32))
+          }).strength((node) => {
+            if (isLocalContext && localRootNodeId) {
+              if (node.id === localRootNodeId) {
+                return 0.95;
+              }
+              const role = localRoleMap.get(node.id) ?? 'other';
+              return role === 'in' || role === 'out' ? 0.86 : 0.18;
+            }
+            return parseXppr(node.xppr) !== null ? 0.94 : 0.32;
+          })
         )
         .force(
           'y',
@@ -219,7 +277,12 @@ export function useForceLayout(
             const weight = d.weight ?? 1;
             return base + Math.min(22, weight * (isLarge ? 1.5 : 2));
           })
-          .strength(0.15);
+          .strength((d: SimLink) => {
+            if (isLocalContext && localRootNodeId && !linkTouchesRoot(d, localRootNodeId)) {
+              return 0;
+            }
+            return isLocalContext ? 0.22 : 0.15;
+          });
 
         const simulation = webGpuForces
           .forceSimulationGPU(seededNodes)
@@ -235,6 +298,19 @@ export function useForceLayout(
           .force(
             'x',
             webGpuForces.forceX((node: SimNode) => {
+              if (isLocalContext && localRootNodeId) {
+                if (node.id === localRootNodeId) {
+                  return width * 0.5;
+                }
+                const role = localRoleMap.get(node.id) ?? 'other';
+                if (role === 'in') {
+                  return width * 0.27;
+                }
+                if (role === 'out') {
+                  return width * 0.73;
+                }
+                return width * 0.5;
+              }
               const xppr = parseXppr(node.xppr);
               if (xppr !== null) {
                 return xpprToX(xppr, 40, Math.max(160, width - 220));
@@ -248,7 +324,16 @@ export function useForceLayout(
                     ? width * 0.86
                     : width * 0.5;
               return 0.65 * depthX + 0.35 * directionalX;
-            }).strength((node: SimNode) => (parseXppr(node.xppr) !== null ? 0.94 : 0.32))
+            }).strength((node: SimNode) => {
+              if (isLocalContext && localRootNodeId) {
+                if (node.id === localRootNodeId) {
+                  return 0.95;
+                }
+                const role = localRoleMap.get(node.id) ?? 'other';
+                return role === 'in' || role === 'out' ? 0.86 : 0.18;
+              }
+              return parseXppr(node.xppr) !== null ? 0.94 : 0.32;
+            })
           )
           .force(
             'y',
@@ -292,7 +377,18 @@ export function useForceLayout(
       disposed = true;
       runningSimulation?.stop();
     };
-  }, [seededNodes, links, width, height, groupOrder, nodeSizes, layoutEngine]);
+  }, [
+    seededNodes,
+    links,
+    width,
+    height,
+    groupOrder,
+    nodeSizes,
+    layoutEngine,
+    isLocalContext,
+    localRootNodeId,
+    localRoleMap
+  ]);
 
 
     return layout;
@@ -409,3 +505,40 @@ function getNodeCollisionRadius(node: SimNode, nodeSizes: Map<string, { width: n
   const padding = node.isCluster ? 18 : 12;
   return Math.hypot(width, height) / 2 + padding;
 }
+
+function linkTouchesRoot(link: SimLink, rootNodeId: string) {
+  const src = typeof link.source === 'string' ? link.source : link.source.id;
+  const dst = typeof link.target === 'string' ? link.target : link.target.id;
+  return src === rootNodeId || dst === rootNodeId;
+}
+
+function computeLocalRoleMap(links: SimLink[], localRootNodeId: string | null) {
+  const roles = new Map<string, 'in' | 'out' | 'both' | 'other'>();
+  if (!localRootNodeId) {
+    return roles;
+  }
+  const incoming = new Set<string>();
+  const outgoing = new Set<string>();
+  for (const link of links) {
+    const src = typeof link.source === 'string' ? link.source : link.source.id;
+    const dst = typeof link.target === 'string' ? link.target : link.target.id;
+    if (dst === localRootNodeId && src !== localRootNodeId) {
+      incoming.add(src);
+    }
+    if (src === localRootNodeId && dst !== localRootNodeId) {
+      outgoing.add(dst);
+    }
+  }
+
+  for (const nodeId of incoming) {
+    roles.set(nodeId, outgoing.has(nodeId) ? 'both' : 'in');
+  }
+  for (const nodeId of outgoing) {
+    if (!roles.has(nodeId)) {
+      roles.set(nodeId, 'out');
+    }
+  }
+
+  return roles;
+}
+

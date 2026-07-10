@@ -239,6 +239,16 @@ body {
   font-size: 0.82rem;
 }
 
+.local-context-chip {
+  color: var(--ing-orange-dark);
+  background: var(--accent-orange-light);
+  border: 1px solid var(--ing-orange-light);
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+
 .graph-stage {
   position: relative;
   overflow: hidden;
@@ -362,6 +372,18 @@ body {
   stroke: var(--ing-orange);
 }
 
+.edge-flow-bidirectional {
+  stroke: var(--accent-fuchsia);
+}
+
+.edge-bundle-bidirectional {
+  stroke: var(--ing-medium-gray);
+}
+
+.edge-bundle-bidirectional-selected {
+  stroke: var(--accent-fuchsia);
+}
+
 .edge-flow_transitive {
   stroke: var(--accent-red);
   stroke-dasharray: 3 3;
@@ -420,6 +442,15 @@ body {
   fill: var(--ing-orange);
 }
 
+.edge-label-bg.edge-flow-bidirectional,
+.edge-label-bg.edge-bundle-bidirectional-selected {
+  fill: var(--accent-fuchsia);
+}
+
+.edge-label-bg.edge-bundle-bidirectional {
+  fill: var(--ing-medium-gray);
+}
+
 .edge-label-bg.edge-flow_transitive {
   fill: var(--accent-red);
 }
@@ -445,6 +476,13 @@ body {
   box-shadow: 0 4px 12px rgba(57, 73, 171, 0.12);
   cursor: pointer;
   transition: all 0.15s ease;
+}
+
+.graph-stage.local-mode .node-card,
+.node-card.node-card-local {
+  width: 220px;
+  min-width: 220px;
+  max-width: 220px;
 }
 
 .node-card:hover {
