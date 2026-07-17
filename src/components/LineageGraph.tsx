@@ -36,6 +36,10 @@ interface EdgeRenderItem {
   isDirect: boolean;
   showDirectStyling: boolean;
   isBidirectionalBundle: boolean;
+  parallelIndex: number;
+  parallelTotal: number;
+  sharedSourcePort: AnchorPoint | null;
+  sharedTargetPort: AnchorPoint | null;
 }
 
 interface LineJumpPoint {
@@ -145,6 +149,7 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
   const nodeRefCallbacksRef = useRef<Map<string, (element: HTMLButtonElement | null) => void>>(new Map());
   const preLocalTransformRef = useRef<ZoomTransform | null>(null);
   const pendingFocusDurationRef = useRef(280);
+  const pendingFocusScaleRef = useRef<number | null>(null);
   const dragStartClientRef = useRef<{ x: number; y: number } | null>(null);
   const dragMovedRef = useRef(false);
   const suppressNextNodeClickRef = useRef(false);
@@ -469,7 +474,11 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
           faded,
           isDirect: isBundleSelected,
           showDirectStyling: false,
-          isBidirectionalBundle: true
+          isBidirectionalBundle: true,
+          parallelIndex: 0,
+          parallelTotal: 1,
+          sharedSourcePort: null,
+          sharedTargetPort: null
         });
         continue;
       }
@@ -520,12 +529,108 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
         faded,
         isDirect,
         showDirectStyling,
-        isBidirectionalBundle: false
+        isBidirectionalBundle: false,
+        parallelIndex: 0,
+        parallelTotal: 1,
+        sharedSourcePort: null,
+        sharedTargetPort: null
       });
     }
 
+    // Outgoing edges with the same normalized label leave from a shared source port.
+    const outgoingBySourceLabel = new Map<string, EdgeRenderItem[]>();
+    for (const item of items) {
+      if (item.isBidirectionalBundle || item.labelLines.length !== 1) {
+        continue;
+      }
+      const normalized = item.labelLines[0].trim().toLowerCase();
+      if (!normalized) {
+        continue;
+      }
+      const key = `${item.source.id}|${normalized}`;
+      const arr = outgoingBySourceLabel.get(key) ?? [];
+      arr.push(item);
+      outgoingBySourceLabel.set(key, arr);
+    }
+
+    for (const groupItems of outgoingBySourceLabel.values()) {
+      if (groupItems.length < 2) {
+        continue;
+      }
+      const source = groupItems[0].source;
+      const sourceRect = getNodeRect(source, nodeSizes);
+      const sourceCenter = getRectCenter(sourceRect);
+      let sumX = 0;
+      let sumY = 0;
+      for (const item of groupItems) {
+        const targetRect = getNodeRect(item.target, nodeSizes);
+        const targetCenter = getRectCenter(targetRect);
+        sumX += targetCenter.x;
+        sumY += targetCenter.y;
+      }
+      const avgTarget = {
+        x: sumX / groupItems.length,
+        y: sumY / groupItems.length
+      };
+      // Fallback to right-side exit if direction is degenerate.
+      const sharedPort =
+        Math.abs(avgTarget.x - sourceCenter.x) < 1e-6 && Math.abs(avgTarget.y - sourceCenter.y) < 1e-6
+          ? ({ x: sourceRect.x + sourceRect.width, y: sourceCenter.y, side: 'right' } as AnchorPoint)
+          : anchorToRectBorder(sourceRect, avgTarget);
+
+      for (const item of groupItems) {
+        item.sharedSourcePort = sharedPort;
+      }
+    }
+
+    // Incoming edges with the same normalized label enter a shared target port.
+    const incomingByTargetLabel = new Map<string, EdgeRenderItem[]>();
+    for (const item of items) {
+      if (item.isBidirectionalBundle || item.labelLines.length !== 1) {
+        continue;
+      }
+      const normalized = item.labelLines[0].trim().toLowerCase();
+      if (!normalized) {
+        continue;
+      }
+      const key = `${item.target.id}|${normalized}`;
+      const arr = incomingByTargetLabel.get(key) ?? [];
+      arr.push(item);
+      incomingByTargetLabel.set(key, arr);
+    }
+
+    for (const groupItems of incomingByTargetLabel.values()) {
+      if (groupItems.length < 2) {
+        continue;
+      }
+      const target = groupItems[0].target;
+      const targetRect = getNodeRect(target, nodeSizes);
+      const targetCenter = getRectCenter(targetRect);
+      let sumX = 0;
+      let sumY = 0;
+      for (const item of groupItems) {
+        const sourceRect = getNodeRect(item.source, nodeSizes);
+        const sourceCenter = getRectCenter(sourceRect);
+        sumX += sourceCenter.x;
+        sumY += sourceCenter.y;
+      }
+      const avgSource = {
+        x: sumX / groupItems.length,
+        y: sumY / groupItems.length
+      };
+      // Fallback to left-side entry if direction is degenerate.
+      const sharedPort =
+        Math.abs(avgSource.x - targetCenter.x) < 1e-6 && Math.abs(avgSource.y - targetCenter.y) < 1e-6
+          ? ({ x: targetRect.x, y: targetCenter.y, side: 'left' } as AnchorPoint)
+          : anchorToRectBorder(targetRect, avgSource);
+
+      for (const item of groupItems) {
+        item.sharedTargetPort = sharedPort;
+      }
+    }
+
     return items;
-  }, [renderLinks, nodeMap, highlightState, dimSet, pivotNodeId]);
+  }, [renderLinks, nodeMap, highlightState, dimSet, pivotNodeId, nodeSizes]);
 
   const highlightedEdgeItems = useMemo(
     () => edgeRenderItems.filter((item) => highlightedNodeIds.has(item.source.id) && highlightedNodeIds.has(item.target.id)),
@@ -590,7 +695,7 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
   const groupedLabelState = useMemo(() => {
     const GROUP_DELIM = '\u0001';
     const suppressInlineLabels = new Set<string>();
-    const aggregatedLabels: Array<{ key: string; x: number; y: number; text: string; edgeTypeClass: string }> = [];
+    const aggregatedLabels: Array<{ key: string; x: number; y: number; text: string; edgeTypeClass: string; dirClass: string }> = [];
 
     const pickDominantEdgeTypeClass = (items: EdgeRenderItem[]) => {
       const counts = new Map<string, number>();
@@ -608,10 +713,58 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
       return winner;
     };
 
+    const pickDominantDirClass = (items: EdgeRenderItem[]) => {
+      const counts = new Map<string, number>();
+      for (const item of items) {
+        const cls = item.dirClass || '';
+        counts.set(cls, (counts.get(cls) ?? 0) + 1);
+      }
+      let winner = '';
+      let maxCount = -1;
+      for (const [dirClass, count] of counts.entries()) {
+        if (count > maxCount) {
+          maxCount = count;
+          winner = dirClass;
+        }
+      }
+      return winner;
+    };
+
     const pickRepresentativePoint = (items: EdgeRenderItem[], isOutgoing: boolean) => {
+      if (isOutgoing && items.length >= 2) {
+        const shared = items[0].sharedSourcePort;
+        if (shared && items.every((item) => item.sharedSourcePort && item.sharedSourcePort.side === shared.side)) {
+          const n = sideNormal(shared.side);
+          return {
+            x: shared.x + n.x * 28,
+            y: shared.y + n.y * 28
+          };
+        }
+      }
+
+      if (!isOutgoing && items.length >= 2) {
+        const shared = items[0].sharedTargetPort;
+        if (shared && items.every((item) => item.sharedTargetPort && item.sharedTargetPort.side === shared.side)) {
+          const n = sideNormal(shared.side);
+          return {
+            x: shared.x + n.x * 28,
+            y: shared.y + n.y * 28
+          };
+        }
+      }
+
       const points = items
         .map((item) => {
-          const anchors = getAnchoredEndpoints(item.source, item.target, nodeSizes, 0, 1, orthogonalPorts);
+          const anchors = getAnchoredEndpoints(
+            item.source,
+            item.target,
+            nodeSizes,
+            item.parallelIndex,
+            item.parallelTotal,
+            orthogonalPorts,
+            item.sharedSourcePort,
+            item.sharedTargetPort
+          );
           const start = anchors.start;
           const end = anchors.end;
           const t = isOutgoing ? 0.22 : 0.78;
@@ -677,7 +830,8 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
         x: representative.x,
         y: representative.y,
         text: label,
-        edgeTypeClass: pickDominantEdgeTypeClass(items)
+        edgeTypeClass: pickDominantEdgeTypeClass(items),
+        dirClass: pickDominantDirClass(items)
       });
     }
 
@@ -695,7 +849,8 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
         x: representative.x,
         y: representative.y,
         text: label,
-        edgeTypeClass: pickDominantEdgeTypeClass(items)
+        edgeTypeClass: pickDominantEdgeTypeClass(items),
+        dirClass: pickDominantDirClass(items)
       });
     }
 
@@ -712,7 +867,16 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
 
     const routes = emphasizedEdgeItems.map((item) => ({
       key: item.key,
-      points: manhattanRoutePoints(item.source, item.target, nodeSizes, orthogonalPorts)
+      points: manhattanRoutePoints(
+        item.source,
+        item.target,
+        nodeSizes,
+        orthogonalPorts,
+        item.parallelIndex,
+        item.parallelTotal,
+        item.sharedSourcePort,
+        item.sharedTargetPort
+      )
     }));
 
     for (let i = 0; i < routes.length; i += 1) {
@@ -1041,8 +1205,10 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
       return;
     }
     const duration = pendingFocusDurationRef.current;
-    panToNode(node, transform.k, duration);
+    const focusScale = pendingFocusScaleRef.current ?? transform.k;
+    panToNode(node, focusScale, duration);
     setSelectedNodeId(node.id);
+    pendingFocusScaleRef.current = null;
     setPendingFocusId(null);
   }, [pendingFocusId, nodeMap, transform.k]);
 
@@ -1185,31 +1351,62 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
     if (!isLocalContext) {
       return;
     }
+    const exitingRootNodeId = localRootNodeId;
     const restoreTransform = preLocalTransformRef.current;
     setIsLocalContext(false);
     setLocalRootNodeId(null);
     setSelectedNodeId(null);
     setHoveredNodeId(null);
     preLocalTransformRef.current = null;
-    if (!restoreTransform || !svgRef.current || !zoomBehaviorRef.current) {
-      return;
+    if (exitingRootNodeId) {
+      pendingFocusDurationRef.current = 340;
+      pendingFocusScaleRef.current = restoreTransform?.k ?? transform.k;
+      setPendingFocusId(exitingRootNodeId);
     }
-    select(svgRef.current)
-      .transition()
-      .duration(320)
-      .ease(easeCubicInOut)
-      .call(zoomBehaviorRef.current.transform as never, restoreTransform);
-  }, [isLocalContext]);
+  }, [isLocalContext, localRootNodeId, transform.k]);
 
   function resetZoomView() {
     if (!svgRef.current || !zoomBehaviorRef.current) {
       return;
     }
+    const resetScale = 1;
+
+    if (selectedNodeId) {
+      const selectedNode = nodeMap.get(selectedNodeId);
+      if (selectedNode) {
+        panToNode(selectedNode, resetScale, 260);
+        return;
+      }
+    }
+
+    let minX = Number.POSITIVE_INFINITY;
+    let minY = Number.POSITIVE_INFINITY;
+    let maxX = Number.NEGATIVE_INFINITY;
+    let maxY = Number.NEGATIVE_INFINITY;
+
+    for (const node of nodesWithManualPositions) {
+      minX = Math.min(minX, node.x - 120);
+      minY = Math.min(minY, node.y - 48);
+      maxX = Math.max(maxX, node.x + 120);
+      maxY = Math.max(maxY, node.y + 48);
+    }
+
+    const targetTransform =
+      Number.isFinite(minX) && Number.isFinite(minY) && Number.isFinite(maxX) && Number.isFinite(maxY)
+        ? (() => {
+            const centerX = (minX + maxX) / 2;
+            const centerY = (minY + maxY) / 2;
+            const tx = width / 2 - centerX * resetScale;
+            const ty = height / 2 - centerY * resetScale;
+            return zoomIdentity.translate(tx, ty).scale(resetScale);
+          })()
+        : zoomIdentity;
+
     select(svgRef.current)
       .transition()
       .duration(240)
       .ease(easeCubicInOut)
-      .call(zoomBehaviorRef.current.transform as never, zoomIdentity);
+      .call(zoomBehaviorRef.current.transform as never, targetTransform);
   }
 
    useEffect(() => {
@@ -1294,6 +1491,14 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
             });
             return;
           }
+          setSelectedNodeId(node.id);
+        }}
+        onDoubleClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          if (node.isCluster) {
+            return;
+          }
           enterLocalContext(node.id);
         }}
       >
@@ -1320,9 +1525,11 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
       item.source,
       item.target,
       nodeSizes,
-      0,
-      1,
-      orthogonalPorts
+      item.parallelIndex,
+      item.parallelTotal,
+      orthogonalPorts,
+      item.sharedSourcePort,
+      item.sharedTargetPort
     );
     const sx = start.x;
     const sy = start.y;
@@ -1341,16 +1548,27 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
 
     const pathD =
       routingMode === 'manhattan'
-        ? manhattanEdgePath(item.source, item.target, nodeSizes, orthogonalPorts)
+        ? manhattanEdgePath(
+            item.source,
+            item.target,
+            nodeSizes,
+            orthogonalPorts,
+            item.parallelIndex,
+            item.parallelTotal,
+            item.sharedSourcePort,
+            item.sharedTargetPort
+          )
         : edgePath(
             item.source,
             item.target,
             edgeMode,
             groupCenter,
-            0,
-            1,
+            item.parallelIndex,
+            item.parallelTotal,
             nodeSizes,
-            orthogonalPorts
+            orthogonalPorts,
+            item.sharedSourcePort,
+            item.sharedTargetPort
           );
 
     const jumpPoints = manhattanLineJumps.get(item.key) ?? [];
@@ -1515,6 +1733,7 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
              <div className="overlay-panel-drag-handle" onPointerDown={(e) => beginPanelDrag('help', e)}><strong>Shortcuts</strong></div>
              <div><kbd>Esc</kbd> clear selection</div>
              <div><kbd>R</kbd> reset zoom</div>
+             <div>Single-click a node to select it. Double-click a node to enter local mode centered on that node.</div>
              <div>Click canvas to clear current node selection. Use Dim strength slider to control node fading when a node is selected.</div>
            </div>
          )}
@@ -1562,7 +1781,7 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
                   height={20}
                   rx="4"
                   ry="4"
-                  className={`edge-label-bg ${label.edgeTypeClass}`}
+                  className={`edge-label-bg ${label.edgeTypeClass} ${label.dirClass}`}
                 />
                 <text
                   x={label.x}
@@ -1599,9 +1818,20 @@ function edgePath(
   parallelIndex = 0,
   parallelTotal = 1,
   nodeSizes: Map<string, { width: number; height: number }>,
-  orthogonalPorts = false
+  orthogonalPorts = false,
+  sharedSourcePort: AnchorPoint | null = null,
+  sharedTargetPort: AnchorPoint | null = null
 ): string {
-  const anchors = getAnchoredEndpoints(source, target, nodeSizes, parallelIndex, parallelTotal, orthogonalPorts);
+  const anchors = getAnchoredEndpoints(
+    source,
+    target,
+    nodeSizes,
+    parallelIndex,
+    parallelTotal,
+    orthogonalPorts,
+    sharedSourcePort,
+    sharedTargetPort
+  );
   const { start, end } = anchors;
   const sx = start.x;
   const sy = start.y;
@@ -1711,7 +1941,9 @@ function getAnchoredEndpoints(
   nodeSizes: Map<string, { width: number; height: number }>,
   parallelIndex = 0,
   parallelTotal = 1,
-  orthogonalPorts = false
+  orthogonalPorts = false,
+  sharedSourcePort: AnchorPoint | null = null,
+  sharedTargetPort: AnchorPoint | null = null
 ) {
   const sourceRect = getNodeRect(source, nodeSizes);
   const targetRect = getNodeRect(target, nodeSizes);
@@ -1723,7 +1955,14 @@ function getAnchoredEndpoints(
         start: anchorToRectBorder(sourceRect, targetCenter),
         end: anchorToRectBorder(targetRect, sourceCenter)
       };
-  const offset = parallelOffsetDistance(parallelIndex, parallelTotal);
+  if (sharedSourcePort) {
+    base.start = sharedSourcePort;
+  }
+  if (sharedTargetPort) {
+    base.end = sharedTargetPort;
+  }
+
+  const offset = sharedSourcePort || sharedTargetPort ? 0 : parallelOffsetDistance(parallelIndex, parallelTotal);
 
   const { start, end } = orthogonalPorts
     ? offsetOrthogonalPorts(base.start, base.end, sourceRect, targetRect, offset)
@@ -1869,9 +2108,13 @@ function manhattanEdgePath(
   source: SimNode,
   target: SimNode,
   nodeSizes: Map<string, { width: number; height: number }>,
-  orthogonalPorts = false
+  orthogonalPorts = false,
+  parallelIndex = 0,
+  parallelTotal = 1,
+  sharedSourcePort: AnchorPoint | null = null,
+  sharedTargetPort: AnchorPoint | null = null
 ): string {
-  const points = manhattanRoutePoints(source, target, nodeSizes, orthogonalPorts);
+  const points = manhattanRoutePoints(source, target, nodeSizes, orthogonalPorts, parallelIndex, parallelTotal, sharedSourcePort, sharedTargetPort);
   return roundedOrthogonalPath(points, 12);
 }
 
@@ -1879,9 +2122,22 @@ function manhattanRoutePoints(
   source: SimNode,
   target: SimNode,
   nodeSizes: Map<string, { width: number; height: number }>,
-  orthogonalPorts = false
+  orthogonalPorts = false,
+  parallelIndex = 0,
+  parallelTotal = 1,
+  sharedSourcePort: AnchorPoint | null = null,
+  sharedTargetPort: AnchorPoint | null = null
 ): Array<{ x: number; y: number }> {
-  const anchors = getAnchoredEndpoints(source, target, nodeSizes, 0, 1, orthogonalPorts);
+  const anchors = getAnchoredEndpoints(
+    source,
+    target,
+    nodeSizes,
+    parallelIndex,
+    parallelTotal,
+    orthogonalPorts,
+    sharedSourcePort,
+    sharedTargetPort
+  );
   const sx = anchors.start.x;
   const sy = anchors.start.y;
   const tx = anchors.end.x;
