@@ -59,6 +59,7 @@ interface GraphUiPrefs {
   legendPanelPos: { x: number; y: number };
   cameraTransform: { x: number; y: number; k: number };
   selectedNodeId: string | null;
+  toolbarPosition: 'top' | 'bottom' | 'left' | 'right';
 }
 
 type PanelName = 'help' | 'legend';
@@ -125,20 +126,21 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
   const [orthogonalPorts, setOrthogonalPorts] = useState(initialPrefs.orthogonalPorts ?? true);
   const [routingMode, setRoutingMode] = useState<'smooth' | 'manhattan'>(initialPrefs.routingMode ?? 'smooth');
   const [edgeMode, setEdgeMode] = useState<'none' | 'soft' | 'grouped'>(initialPrefs.edgeMode ?? 'soft');
-  const [showHelpPanel, setShowHelpPanel] = useState(initialPrefs.showHelpPanel ?? false);
-  const [showLegendPanel, setShowLegendPanel] = useState(initialPrefs.showLegendPanel ?? false);
-  const [helpPanelPos, setHelpPanelPos] = useState<{ x: number; y: number }>(() => initialPrefs.helpPanelPos ?? { x: Math.max(10, width - 250), y: 10 });
-  const [legendPanelPos, setLegendPanelPos] = useState<{ x: number; y: number }>(() => initialPrefs.legendPanelPos ?? { x: 10, y: 10 });
-  const [transform, setTransform] = useState<ZoomTransform>(() => readStoredTransform(initialPrefs.cameraTransform));
-  const [searchTerm, setSearchTerm] = useState('');
-  const [tableMatches, setTableMatches] = useState<string[]>([]);
-  const [tableMatchIndex, setTableMatchIndex] = useState(-1);
-  const [pendingFocusId, setPendingFocusId] = useState<string | null>(null);
-  const [localRootNodeId, setLocalRootNodeId] = useState<string | null>(null);
-  const [isLocalContext, setIsLocalContext] = useState(false);
-  const [manualPositions, setManualPositions] = useState<Map<string, { x: number; y: number }>>(new Map());
-  const [draggingNodeId, setDraggingNodeId] = useState<string | null>(null);
-  const [nodeSizes, setNodeSizes] = useState<Map<string, { width: number; height: number }>>(new Map());
+   const [showHelpPanel, setShowHelpPanel] = useState(initialPrefs.showHelpPanel ?? false);
+   const [showLegendPanel, setShowLegendPanel] = useState(initialPrefs.showLegendPanel ?? false);
+   const [helpPanelPos, setHelpPanelPos] = useState<{ x: number; y: number }>(() => initialPrefs.helpPanelPos ?? { x: Math.max(10, width - 250), y: 10 });
+   const [legendPanelPos, setLegendPanelPos] = useState<{ x: number; y: number }>(() => initialPrefs.legendPanelPos ?? { x: 10, y: 10 });
+   const [transform, setTransform] = useState<ZoomTransform>(() => readStoredTransform(initialPrefs.cameraTransform));
+   const [searchTerm, setSearchTerm] = useState('');
+   const [tableMatches, setTableMatches] = useState<string[]>([]);
+   const [tableMatchIndex, setTableMatchIndex] = useState(-1);
+   const [pendingFocusId, setPendingFocusId] = useState<string | null>(null);
+   const [localRootNodeId, setLocalRootNodeId] = useState<string | null>(null);
+   const [isLocalContext, setIsLocalContext] = useState(false);
+   const [manualPositions, setManualPositions] = useState<Map<string, { x: number; y: number }>>(new Map());
+   const [draggingNodeId, setDraggingNodeId] = useState<string | null>(null);
+   const [nodeSizes, setNodeSizes] = useState<Map<string, { width: number; height: number }>>(new Map());
+   const [toolbarPosition, setToolbarPosition] = useState<'top' | 'bottom' | 'left' | 'right'>(initialPrefs.toolbarPosition ?? 'top');
 
   const svgRef = useRef<SVGSVGElement | null>(null);
   const stageRef = useRef<HTMLDivElement | null>(null);
@@ -1030,29 +1032,30 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
     }
   }, []);
 
-   useEffect(() => {
-     if (typeof window === 'undefined') {
-       return;
-     }
-     const prefs: GraphUiPrefs = {
-       focusDimStrength,
-       showDirectEdges,
-       orthogonalPorts,
-       routingMode,
-       edgeMode,
-       showHelpPanel,
-       showLegendPanel,
-       helpPanelPos,
-       legendPanelPos,
-       cameraTransform: { x: transform.x, y: transform.y, k: transform.k },
-       selectedNodeId
-     };
-     try {
-       window.localStorage.setItem(GRAPH_UI_PREFS_KEY, JSON.stringify(prefs));
-     } catch {
-       // Ignore storage quota/privacy mode errors and keep UI responsive.
-     }
-   }, [focusDimStrength, showDirectEdges, orthogonalPorts, routingMode, edgeMode, showHelpPanel, showLegendPanel, helpPanelPos, legendPanelPos, transform, selectedNodeId]);
+    useEffect(() => {
+      if (typeof window === 'undefined') {
+        return;
+      }
+      const prefs: GraphUiPrefs = {
+        focusDimStrength,
+        showDirectEdges,
+        orthogonalPorts,
+        routingMode,
+        edgeMode,
+        showHelpPanel,
+        showLegendPanel,
+        helpPanelPos,
+        legendPanelPos,
+        cameraTransform: { x: transform.x, y: transform.y, k: transform.k },
+        selectedNodeId,
+        toolbarPosition
+      };
+      try {
+        window.localStorage.setItem(GRAPH_UI_PREFS_KEY, JSON.stringify(prefs));
+      } catch {
+        // Ignore storage quota/privacy mode errors and keep UI responsive.
+      }
+    }, [focusDimStrength, showDirectEdges, orthogonalPorts, routingMode, edgeMode, showHelpPanel, showLegendPanel, helpPanelPos, legendPanelPos, transform, selectedNodeId, toolbarPosition]);
 
   useEffect(() => {
     if (!dragPanelState) {
@@ -1635,11 +1638,25 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
     );
   }
 
+   const cycleToolbarPosition = () => {
+     const positions: Array<'top' | 'bottom' | 'left' | 'right'> = ['top', 'bottom', 'left', 'right'];
+     const currentIndex = positions.indexOf(toolbarPosition);
+     const nextIndex = (currentIndex + 1) % positions.length;
+     setToolbarPosition(positions[nextIndex]);
+   };
+
+   // Adjust canvas dimensions when toolbar is on left/right
+   const toolbarWidth = (toolbarPosition === 'left' || toolbarPosition === 'right') ? 280 : 0;
+   const toolbarHeight = (toolbarPosition === 'top' || toolbarPosition === 'bottom') ? 0 : 0;
+   const canvasWidth = Math.max(400, width - toolbarWidth);
+   const canvasHeight = height;
+
    return (
-     <div className="graph-shell">
-       <div className="toolbar">
-         <button onClick={() => setCollapsedGroups(new Set(groupOrder))}>Collapse all groups</button>
-         <button onClick={() => setCollapsedGroups(new Set())}>Expand all groups</button>
+      <div className={`graph-shell graph-shell-toolbar-${toolbarPosition}`}>
+        <div className={`toolbar toolbar-${toolbarPosition}`}>
+          <button onClick={cycleToolbarPosition} title="Cycle toolbar position (Top → Bottom → Left → Right)">⇄</button>
+          <button onClick={() => setCollapsedGroups(new Set(groupOrder))}>Collapse all groups</button>
+          <button onClick={() => setCollapsedGroups(new Set())}>Expand all groups</button>
          <label>
            Dim strength
            <input
@@ -1711,10 +1728,10 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
         {selectedNodeId ? <span className="selected-label">Selected: {selectedNodeId}</span> : null}
       </div>
 
-      <div
-        ref={stageRef}
-        className={`graph-stage ${isLocalContext ? 'local-mode' : ''}`}
-        style={{ width, height }}
+       <div
+         ref={stageRef}
+         className={`graph-stage ${isLocalContext ? 'local-mode' : ''}`}
+         style={{ width: canvasWidth, height: canvasHeight }}
         onClick={(event) => {
           const target = event.target;
           if (target instanceof Element && target.closest('.node-card')) {
@@ -1747,7 +1764,7 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
             <div><span className="legend-dot legend-incoming" /> incoming (focus)</div>
           </div>
         )}
-        <svg ref={svgRef} width={width} height={height} className="edge-layer edge-layer-low">
+         <svg ref={svgRef} width={canvasWidth} height={canvasHeight} className="edge-layer edge-layer-low">
           <defs>
             <marker id="arrow-start-dot" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="3.5" markerHeight="3.5" orient="auto">
               <circle cx="5" cy="5" r="4" fill="context-stroke" />
@@ -1769,7 +1786,7 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
           {highlightedRenderNodes.map((node) => renderNodeCard(node))}
         </div>
 
-        <svg width={width} height={height} className="edge-layer edge-layer-highlight">
+         <svg width={canvasWidth} height={canvasHeight} className="edge-layer edge-layer-highlight">
           <g transform={transform.toString()}>
             {emphasizedEdgeItems.map((item) => renderEdge(item, true))}
             {groupedLabelState.aggregatedLabels.map((label) => (
