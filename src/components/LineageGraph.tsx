@@ -131,6 +131,8 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
   const [legendPanelPos, setLegendPanelPos] = useState<{ x: number; y: number }>(() => initialPrefs.legendPanelPos ?? { x: 10, y: 10 });
   const [transform, setTransform] = useState<ZoomTransform>(() => readStoredTransform(initialPrefs.cameraTransform));
   const [searchTerm, setSearchTerm] = useState('');
+  const [spreadXStrengthUi, setSpreadXStrengthUi] = useState(55);
+  const [laneYStrengthUi, setLaneYStrengthUi] = useState(35);
   const [tableMatches, setTableMatches] = useState<string[]>([]);
   const [tableMatchIndex, setTableMatchIndex] = useState(-1);
   const [pendingFocusId, setPendingFocusId] = useState<string | null>(null);
@@ -244,6 +246,9 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
     });
     return { nodes, links };
   }, [visibleGraph, isLocalContext, localRootNodeId]);
+  const freeNodeXStrengthOverride = useMemo(() => 0.24 + (spreadXStrengthUi / 100) * 0.52, [spreadXStrengthUi]);
+  const laneYStrengthOverride = useMemo(() => 0.08 + (laneYStrengthUi / 100) * 0.42, [laneYStrengthUi]);
+
   const { nodes, links } = useForceLayout(
     activeGraph.nodes,
     activeGraph.links,
@@ -254,7 +259,9 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
     layoutEngine,
     {
       isLocalContext,
-      localRootNodeId
+      localRootNodeId,
+      freeNodeXStrengthOverride,
+      laneYStrengthOverride
     }
   );
   const localRootNodeLabel = useMemo(() => {
@@ -1651,6 +1658,30 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
              onChange={(e) => setFocusDimStrength(Number(e.target.value))}
            />
            <span>{focusDimStrength}%</span>
+         </label>
+         <label>
+           Horizontal spread
+           <input
+             type="range"
+             min={0}
+             max={100}
+             step={1}
+             value={spreadXStrengthUi}
+             onChange={(e) => setSpreadXStrengthUi(Number(e.target.value))}
+           />
+           <span>{spreadXStrengthUi}%</span>
+         </label>
+         <label>
+           Vertical lane lock
+           <input
+             type="range"
+             min={0}
+             max={100}
+             step={1}
+             value={laneYStrengthUi}
+             onChange={(e) => setLaneYStrengthUi(Number(e.target.value))}
+           />
+           <span>{laneYStrengthUi}%</span>
          </label>
          <label>
            <input type="checkbox" checked={showDirectEdges} onChange={(e) => setShowDirectEdges(e.target.checked)} />

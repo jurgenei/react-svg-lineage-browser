@@ -11,6 +11,8 @@ interface LayoutResult {
 interface ForceLayoutOptions {
   isLocalContext?: boolean;
   localRootNodeId?: string | null;
+  freeNodeXStrengthOverride?: number;
+  laneYStrengthOverride?: number;
 }
 
 export function useForceLayout(
@@ -56,7 +58,7 @@ export function useForceLayout(
             node.x = width * 0.5;
           }
           node.fx = null;
-          const categoryYNorm = getCategoryYPosition(node.dominant_category);
+          const categoryYNorm = relaxedCategoryY(getCategoryYPosition(node.dominant_category));
           const categoryY = topY + categoryYNorm * (bottomY - topY);
           node.y = categoryY;
           node.fy = null;
@@ -88,7 +90,7 @@ export function useForceLayout(
           node.fx = null;
         }
 
-         const categoryYNorm = getCategoryYPosition(node.dominant_category);
+         const categoryYNorm = relaxedCategoryY(getCategoryYPosition(node.dominant_category));
          const categoryY = topY + categoryYNorm * (bottomY - topY);
          node.y = categoryY;
          // Allow nodes to spread vertically around their category lane via forceY
@@ -110,6 +112,17 @@ export function useForceLayout(
     const tickStride = isLarge ? 5 : isMedium ? 3 : 2;
     const chargeStrength = isLarge ? -32 : isMedium ? -48 : -60;
     const alphaDecay = isLarge ? 0.14 : isMedium ? 0.11 : 0.09;
+    const baseFreeNodeXStrength = isLarge ? 0.38 : isMedium ? 0.42 : 0.48;
+    const baseLaneYStrength = isLarge ? 0.26 : isMedium ? 0.3 : 0.34;
+    const freeNodeXStrength =
+      typeof options.freeNodeXStrengthOverride === 'number' && Number.isFinite(options.freeNodeXStrengthOverride)
+        ? options.freeNodeXStrengthOverride
+        : baseFreeNodeXStrength;
+    const laneYStrength =
+      typeof options.laneYStrengthOverride === 'number' && Number.isFinite(options.laneYStrengthOverride)
+        ? options.laneYStrengthOverride
+        : baseLaneYStrength;
+    const verticalOverlapStrength = isLarge ? 0.68 : isMedium ? 0.78 : 0.9;
     const shouldPreferWebGpu = layoutEngine === 'webgpu' || (layoutEngine === 'auto' && size >= 320);
     let frame = 0;
     let disposed = false;
@@ -132,8 +145,9 @@ export function useForceLayout(
         }
         const safeX = x ?? prior?.x ?? width * 0.5;
         const safeY = y ?? prior?.y ?? height * 0.5;
-        lastGoodPosition.set(node.id, { x: safeX, y: safeY });
-        return { ...node, x: safeX, y: safeY };
+        const clamped = clampNodeToViewport(node, safeX, safeY, width, height, nodeSizes);
+        lastGoodPosition.set(node.id, { x: clamped.x, y: clamped.y });
+        return { ...node, x: clamped.x, y: clamped.y };
       });
       if (repaired > 0) {
         console.warn(`[useForceLayout] repaired ${repaired} invalid node coordinates (engine=${layoutEngine})`);
@@ -153,6 +167,7 @@ export function useForceLayout(
     }) => {
       runningSimulation = simulation;
       simulation.on('tick', () => {
+        resolveVerticalOverlaps(seededNodes, nodeSizes, width, height, verticalOverlapStrength);
         frame += 1;
         if (frame % tickStride !== 0) {
           return;
@@ -223,17 +238,17 @@ export function useForceLayout(
               const role = localRoleMap.get(node.id) ?? 'other';
               return role === 'in' || role === 'out' ? 0.86 : 0.18;
             }
-            return parseXppr(node.xppr) !== null ? 0.94 : 0.32;
+            return parseXppr(node.xppr) !== null ? 0.94 : freeNodeXStrength;
           })
         )
         .force(
           'y',
           forceY<SimNode>((node) => {
-            const categoryYNorm = getCategoryYPosition(node.dominant_category);
+            const categoryYNorm = relaxedCategoryY(getCategoryYPosition(node.dominant_category));
             const topBound = 48;
             const bottomBound = Math.max(168, height - 48);
             return topBound + categoryYNorm * (bottomBound - topBound);
-          }).strength(() => 0.22)
+          }).strength(() => laneYStrength)
         )
         .alpha(0.6)
         .alphaDecay(alphaDecay)
@@ -332,19 +347,19 @@ export function useForceLayout(
                 const role = localRoleMap.get(node.id) ?? 'other';
                 return role === 'in' || role === 'out' ? 0.86 : 0.18;
               }
-              return parseXppr(node.xppr) !== null ? 0.94 : 0.32;
+              return parseXppr(node.xppr) !== null ? 0.94 : freeNodeXStrength;
             })
           )
           .force(
             'y',
             webGpuForces
               .forceY((node: SimNode) => {
-                const categoryYNorm = getCategoryYPosition(node.dominant_category);
+                const categoryYNorm = relaxedCategoryY(getCategoryYPosition(node.dominant_category));
                 const topBound = 48;
                 const bottomBound = Math.max(168, height - 48);
                 return topBound + categoryYNorm * (bottomBound - topBound);
               })
-              .strength(() => 0.22)
+              .strength(() => laneYStrength)
           )
           .alphaDecay(alphaDecay)
           .velocityDecay(0.4);
@@ -387,7 +402,9 @@ export function useForceLayout(
     layoutEngine,
     isLocalContext,
     localRootNodeId,
-    localRoleMap
+    localRoleMap,
+    options.freeNodeXStrengthOverride,
+    options.laneYStrengthOverride
   ]);
 
 
@@ -475,6 +492,12 @@ function parseYcluster(value: number | string | undefined): number | null {
   return Math.max(0, Math.min(1, numeric));
 }
 
+function relaxedCategoryY(value: number) {
+  const normalized = Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0.5;
+  // Pull extreme lanes slightly inward to avoid hard top/bottom glueing.
+  return 0.08 + normalized * 0.84;
+}
+
 function xpprToX(xppr: number, leftX: number, rightX: number): number {
   // xppr=1 maps to left, xppr=0 maps to right.
   return leftX + (1 - xppr) * Math.max(0, rightX - leftX);
@@ -494,6 +517,82 @@ function sanitizeCoordinate(value: number | undefined): number | null {
     return null;
   }
   return value;
+}
+
+function clampNodeToViewport(
+  node: SimNode,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  nodeSizes: Map<string, { width: number; height: number }>
+) {
+  const measured = nodeSizes.get(node.id);
+  const fallbackWidth = node.isCluster ? 220 : 190;
+  const fallbackHeight = node.isCluster ? 64 : 48;
+  const halfWidth = (measured?.width ?? fallbackWidth) / 2;
+  const halfHeight = (measured?.height ?? fallbackHeight) / 2;
+  const pad = 10;
+
+  return {
+    x: clamp(x, halfWidth + pad, Math.max(halfWidth + pad, width - halfWidth - pad)),
+    y: clamp(y, halfHeight + pad, Math.max(halfHeight + pad, height - halfHeight - pad))
+  };
+}
+
+function resolveVerticalOverlaps(
+  nodes: SimNode[],
+  nodeSizes: Map<string, { width: number; height: number }>,
+  width: number,
+  height: number,
+  strength: number
+) {
+  if (nodes.length < 2 || strength <= 0) {
+    return;
+  }
+
+  for (let i = 0; i < nodes.length; i += 1) {
+    const a = nodes[i];
+    const aSize = nodeSizes.get(a.id);
+    const aWidth = aSize?.width ?? (a.isCluster ? 220 : 190);
+    const aHeight = aSize?.height ?? (a.isCluster ? 64 : 48);
+
+    for (let j = i + 1; j < nodes.length; j += 1) {
+      const b = nodes[j];
+      const bSize = nodeSizes.get(b.id);
+      const bWidth = bSize?.width ?? (b.isCluster ? 220 : 190);
+      const bHeight = bSize?.height ?? (b.isCluster ? 64 : 48);
+
+      const dx = b.x - a.x;
+      const horizontalGate = (aWidth + bWidth) * 0.42;
+      if (Math.abs(dx) > horizontalGate) {
+        continue;
+      }
+
+      const minVerticalGap = (aHeight + bHeight) * 0.5 + 8;
+      const dy = b.y - a.y;
+      const absDy = Math.abs(dy);
+      if (absDy >= minVerticalGap) {
+        continue;
+      }
+
+      const overlap = minVerticalGap - absDy;
+      const direction = dy >= 0 ? 1 : -1;
+      const shift = overlap * 0.5 * strength;
+
+      a.y -= direction * shift;
+      b.y += direction * shift;
+    }
+  }
+
+  for (const node of nodes) {
+    const clamped = clampNodeToViewport(node, node.x, node.y, width, height, nodeSizes);
+    node.y = clamped.y;
+  }
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
 }
 
 function getNodeCollisionRadius(node: SimNode, nodeSizes: Map<string, { width: number; height: number }>) {
