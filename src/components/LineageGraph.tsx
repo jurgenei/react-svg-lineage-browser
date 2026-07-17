@@ -49,6 +49,7 @@ interface LineJumpPoint {
 
 interface GraphUiPrefs {
   focusDimStrength: number;
+  autoZoomEnabled: boolean;
   showDirectEdges: boolean;
   orthogonalPorts: boolean;
   routingMode: 'smooth' | 'manhattan';
@@ -122,6 +123,7 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
      }
      return 85;
    });
+   const [autoZoomEnabled, setAutoZoomEnabled] = useState(initialPrefs.autoZoomEnabled ?? true);
   const [showDirectEdges, setShowDirectEdges] = useState(initialPrefs.showDirectEdges ?? false);
   const [orthogonalPorts, setOrthogonalPorts] = useState(initialPrefs.orthogonalPorts ?? true);
   const [routingMode, setRoutingMode] = useState<'smooth' | 'manhattan'>(initialPrefs.routingMode ?? 'smooth');
@@ -1157,6 +1159,7 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
       }
       const prefs: GraphUiPrefs = {
         focusDimStrength,
+        autoZoomEnabled,
         showDirectEdges,
         orthogonalPorts,
         routingMode,
@@ -1174,7 +1177,7 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
       } catch {
         // Ignore storage quota/privacy mode errors and keep UI responsive.
       }
-    }, [focusDimStrength, showDirectEdges, orthogonalPorts, routingMode, edgeMode, showHelpPanel, showLegendPanel, helpPanelPos, legendPanelPos, transform, selectedNodeId, toolbarPosition]);
+    }, [focusDimStrength, autoZoomEnabled, showDirectEdges, orthogonalPorts, routingMode, edgeMode, showHelpPanel, showLegendPanel, helpPanelPos, legendPanelPos, transform, selectedNodeId, toolbarPosition]);
 
   useEffect(() => {
     if (!dragPanelState) {
@@ -1347,6 +1350,10 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
       lastNodeCountRef.current = currentNodeCount;
     }
 
+    if (!autoZoomEnabled) {
+      return;
+    }
+
     if (!svgRef.current || !zoomBehaviorRef.current || hasInitialFitRef.current || currentNodeCount === 0) {
       return;
     }
@@ -1387,7 +1394,7 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
       .call(zoomBehaviorRef.current.transform as never, targetTransform);
 
     hasInitialFitRef.current = true;
-  }, [nodesWithManualPositions.length, width, height]);
+  }, [nodesWithManualPositions.length, width, height, autoZoomEnabled]);
 
   const searchResultsText = tableMatches.length
     ? `match ${tableMatchIndex + 1}/${tableMatches.length}`
@@ -1806,6 +1813,10 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
            <input type="checkbox" checked={showDirectEdges} onChange={(e) => setShowDirectEdges(e.target.checked)} />
            Show direct edges
          </label>
+          <label>
+            <input type="checkbox" checked={autoZoomEnabled} onChange={(e) => setAutoZoomEnabled(e.target.checked)} />
+            Auto zoom
+          </label>
         <label>
           <input
             type="checkbox"
