@@ -143,8 +143,11 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
    const [toolbarPosition, setToolbarPosition] = useState<'top' | 'bottom' | 'left' | 'right'>(initialPrefs.toolbarPosition ?? 'top');
 
   const svgRef = useRef<SVGSVGElement | null>(null);
+  const scrollViewportRef = useRef<HTMLDivElement | null>(null);
   const stageRef = useRef<HTMLDivElement | null>(null);
   const zoomBehaviorRef = useRef<ZoomBehavior<SVGSVGElement, unknown> | null>(null);
+  const syncingScrollFromTransformRef = useRef(false);
+  const syncingTransformFromScrollRef = useRef(false);
   const dragStateRef = useRef<{ id: string; offsetX: number; offsetY: number } | null>(null);
   const nodeElementsRef = useRef<Map<string, HTMLButtonElement>>(new Map());
   const nodeObserversRef = useRef<Map<string, ResizeObserver>>(new Map());
@@ -286,6 +289,11 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
     return map;
   }, [nodesWithManualPositions]);
 
+  // Adjust canvas dimensions when toolbar is on left/right.
+  const toolbarWidth = toolbarPosition === 'left' || toolbarPosition === 'right' ? 280 : 0;
+  const canvasWidth = Math.max(400, width - toolbarWidth);
+  const canvasHeight = height;
+
   const groupCenter = useMemo(() => {
     const accum = new Map<string, { x: number; y: number; count: number }>();
     for (const node of nodesWithManualPositions) {
@@ -310,6 +318,81 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
     const maxY = ((height - transform.y) / transform.k) + padding;
     return { minX, minY, maxX, maxY };
   }, [transform, width, height]);
+
+  const scrollWorldBounds = useMemo(() => {
+    if (!nodesWithManualPositions.length) {
+      const halfW = width / Math.max(transform.k, 0.001) / 2;
+      const halfH = height / Math.max(transform.k, 0.001) / 2;
+      return { minX: -halfW, minY: -halfH, maxX: halfW, maxY: halfH };
+    }
+
+    let minX = Number.POSITIVE_INFINITY;
+    let minY = Number.POSITIVE_INFINITY;
+    let maxX = Number.NEGATIVE_INFINITY;
+    let maxY = Number.NEGATIVE_INFINITY;
+    for (const node of nodesWithManualPositions) {
+      const measured = nodeSizes.get(node.id);
+      const nodeWidth = measured?.width ?? 190;
+      const nodeHeight = measured?.height ?? 48;
+      minX = Math.min(minX, node.x - nodeWidth * 0.65);
+      minY = Math.min(minY, node.y - nodeHeight * 0.75);
+      maxX = Math.max(maxX, node.x + nodeWidth * 1.15);
+      maxY = Math.max(maxY, node.y + nodeHeight * 1.15);
+    }
+
+    const margin = 260;
+    minX -= margin;
+    minY -= margin;
+    maxX += margin;
+    maxY += margin;
+
+    const minWorldWidth = width / Math.max(transform.k, 0.001);
+    const minWorldHeight = height / Math.max(transform.k, 0.001);
+    const worldWidth = Math.max(1, maxX - minX);
+    const worldHeight = Math.max(1, maxY - minY);
+    if (worldWidth < minWorldWidth) {
+      const cx = (minX + maxX) / 2;
+      minX = cx - minWorldWidth / 2;
+      maxX = cx + minWorldWidth / 2;
+    }
+    if (worldHeight < minWorldHeight) {
+      const cy = (minY + maxY) / 2;
+      minY = cy - minWorldHeight / 2;
+      maxY = cy + minWorldHeight / 2;
+    }
+
+    return { minX, minY, maxX, maxY };
+  }, [nodesWithManualPositions, nodeSizes, width, height, transform.k]);
+
+  const scrollContentSize = useMemo(() => {
+    const worldWidth = Math.max(1, scrollWorldBounds.maxX - scrollWorldBounds.minX);
+    const worldHeight = Math.max(1, scrollWorldBounds.maxY - scrollWorldBounds.minY);
+    return {
+      width: Math.max(canvasWidth + 1, Math.ceil(worldWidth * transform.k)),
+      height: Math.max(canvasHeight + 1, Math.ceil(worldHeight * transform.k))
+    };
+  }, [scrollWorldBounds, transform.k, canvasWidth, canvasHeight]);
+
+  const onViewportScroll = useCallback(
+    (event: React.UIEvent<HTMLDivElement>) => {
+      if (syncingScrollFromTransformRef.current) {
+        return;
+      }
+      if (!zoomBehaviorRef.current || !svgRef.current) {
+        return;
+      }
+
+      const viewport = event.currentTarget;
+      const k = transform.k;
+      const worldX = scrollWorldBounds.minX + viewport.scrollLeft / k;
+      const worldY = scrollWorldBounds.minY + viewport.scrollTop / k;
+      const targetTransform = zoomIdentity.translate(-(worldX * k), -(worldY * k)).scale(k);
+
+      syncingTransformFromScrollRef.current = true;
+      select(svgRef.current).call(zoomBehaviorRef.current.transform as never, targetTransform);
+    },
+    [transform.k, scrollWorldBounds]
+  );
 
   const cullingEnabled = nodesWithManualPositions.length > 280;
   const visibleNodeIds = useMemo(() => {
@@ -1032,6 +1115,42 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
     }
   }, []);
 
+  useEffect(() => {
+    const viewport = scrollViewportRef.current;
+    if (!viewport) {
+      return;
+    }
+
+    if (syncingTransformFromScrollRef.current) {
+      syncingTransformFromScrollRef.current = false;
+      return;
+    }
+
+    const k = transform.k;
+    const worldX = -transform.x / k;
+    const worldY = -transform.y / k;
+    const maxLeft = Math.max(0, scrollContentSize.width - canvasWidth);
+    const maxTop = Math.max(0, scrollContentSize.height - canvasHeight);
+    const targetLeft = clamp((worldX - scrollWorldBounds.minX) * k, 0, maxLeft);
+    const targetTop = clamp((worldY - scrollWorldBounds.minY) * k, 0, maxTop);
+
+    syncingScrollFromTransformRef.current = true;
+    if (Math.abs(viewport.scrollLeft - targetLeft) > 0.5) {
+      viewport.scrollLeft = targetLeft;
+    }
+    if (Math.abs(viewport.scrollTop - targetTop) > 0.5) {
+      viewport.scrollTop = targetTop;
+    }
+
+    const rafId = window.requestAnimationFrame(() => {
+      syncingScrollFromTransformRef.current = false;
+    });
+
+    return () => {
+      window.cancelAnimationFrame(rafId);
+    };
+  }, [transform, scrollWorldBounds, scrollContentSize, canvasWidth, canvasHeight]);
+
     useEffect(() => {
       if (typeof window === 'undefined') {
         return;
@@ -1665,12 +1784,6 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
      setToolbarPosition(positions[nextIndex]);
    };
 
-   // Adjust canvas dimensions when toolbar is on left/right
-   const toolbarWidth = (toolbarPosition === 'left' || toolbarPosition === 'right') ? 280 : 0;
-   const toolbarHeight = (toolbarPosition === 'top' || toolbarPosition === 'bottom') ? 0 : 0;
-   const canvasWidth = Math.max(400, width - toolbarWidth);
-   const canvasHeight = height;
-
    return (
       <div className={`graph-shell graph-shell-toolbar-${toolbarPosition}`}>
         <div className={`toolbar toolbar-${toolbarPosition}`}>
@@ -1749,29 +1862,39 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
       </div>
 
        <div
-         ref={stageRef}
-         className={`graph-stage ${isLocalContext ? 'local-mode' : ''}`}
+         ref={scrollViewportRef}
+         className="graph-stage-viewport"
          style={{ width: canvasWidth, height: canvasHeight }}
-         onClick={(event) => {
-           const target = event.target;
-           if (target instanceof Element && target.closest('.node-card')) {
-             return;
-           }
-           if (isLocalContext) {
-             exitLocalContext();
-             return;
-           }
-           // Immediately jump to selected node before clearing selection
-           if (selectedNodeId) {
-             const selectedNode = nodeMap.get(selectedNodeId);
-             if (selectedNode) {
-               jumpToNode(selectedNode, 1);
-             }
-           }
-           setSelectedNodeId(null);
-           setHoveredNodeId(null);
-         }}
-      >
+         onScroll={onViewportScroll}
+       >
+         <div
+           className="graph-stage-scroll-content"
+           style={{ width: scrollContentSize.width, height: scrollContentSize.height }}
+         >
+           <div
+             ref={stageRef}
+             className={`graph-stage ${isLocalContext ? 'local-mode' : ''}`}
+             style={{ width: canvasWidth, height: canvasHeight }}
+             onClick={(event) => {
+               const target = event.target;
+               if (target instanceof Element && target.closest('.node-card')) {
+                 return;
+               }
+               if (isLocalContext) {
+                 exitLocalContext();
+                 return;
+               }
+               // Immediately jump to selected node before clearing selection
+               if (selectedNodeId) {
+                 const selectedNode = nodeMap.get(selectedNodeId);
+                 if (selectedNode) {
+                   jumpToNode(selectedNode, 1);
+                 }
+               }
+               setSelectedNodeId(null);
+               setHoveredNodeId(null);
+             }}
+           >
          {showHelpPanel && (
            <div className="overlay-panel overlay-help" style={{ left: helpPanelPos.x, top: helpPanelPos.y }}>
              <div className="overlay-panel-drag-handle" onPointerDown={(e) => beginPanelDrag('help', e)}><strong>Shortcuts</strong></div>
@@ -1838,7 +1961,9 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
               </g>
             ))}
           </g>
-        </svg>
+         </svg>
+           </div>
+         </div>
       </div>
     </div>
   );

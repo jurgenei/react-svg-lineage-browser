@@ -364,6 +364,60 @@ body {
    flex: 1;
 }
 
+.graph-stage-viewport {
+  position: relative;
+  flex: 1;
+  overflow: auto;
+  background: var(--surface);
+  /* Reserve scrollbar space so the hover target stays predictable. */
+  scrollbar-gutter: stable both-edges;
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+.graph-stage-viewport:hover {
+  scrollbar-color: var(--border-strong) var(--surface-muted);
+}
+
+.graph-stage-viewport::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+
+.graph-stage-viewport::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.graph-stage-viewport::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 999px;
+  border: 3px solid transparent;
+}
+
+.graph-stage-viewport:hover::-webkit-scrollbar-track {
+  background: var(--surface-muted);
+}
+
+.graph-stage-viewport:hover::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+}
+
+.graph-stage-viewport:hover::-webkit-scrollbar-thumb:hover {
+  background: var(--ing-medium-gray);
+}
+
+.graph-stage-scroll-content {
+  position: relative;
+  min-width: 100%;
+  min-height: 100%;
+}
+
+.graph-stage-scroll-content > .graph-stage {
+  position: sticky;
+  left: 0;
+  top: 0;
+}
+
 .overlay-panel {
   position: absolute;
   top: 10px;
