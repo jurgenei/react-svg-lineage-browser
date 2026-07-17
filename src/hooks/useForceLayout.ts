@@ -108,8 +108,9 @@ export function useForceLayout(
     const isLarge = size > 700;
     const isMedium = size > 260;
     const tickStride = isLarge ? 5 : isMedium ? 3 : 2;
-    const chargeStrength = isLarge ? -32 : isMedium ? -48 : -60;
-    const alphaDecay = isLarge ? 0.14 : isMedium ? 0.11 : 0.09;
+    // In local context, use stronger negative charge to keep nodes closer together
+    const chargeStrength = isLocalContext ? -52 : (isLarge ? -32 : isMedium ? -48 : -60);
+    const alphaDecay = isLocalContext ? 0.12 : (isLarge ? 0.14 : isMedium ? 0.11 : 0.09);
     const shouldPreferWebGpu = layoutEngine === 'webgpu' || (layoutEngine === 'auto' && size >= 320);
     let frame = 0;
     let disposed = false;
@@ -168,13 +169,17 @@ export function useForceLayout(
         .distance((d) => {
           const base = d.type === 'CALLS' ? 64 : 54;
           const weight = d.weight ?? 1;
-          return base + Math.min(22, weight * (isLarge ? 1.5 : 2));
+          // In local context, use shorter link distances for more compact layout
+          const distMultiplier = isLocalContext ? 1.2 : (isLarge ? 1.5 : 2);
+          return base + Math.min(18, weight * distMultiplier);
         })
         .strength((d) => {
           if (isLocalContext && localRootNodeId && !linkTouchesRoot(d, localRootNodeId)) {
-            return 0;
+            // In local context, allow reduced force between non-root nodes for cohesion
+            return 0.12;
           }
-          return isLocalContext ? 0.22 : 0.15;
+          // Stronger link forces in local context to pull nodes together
+          return isLocalContext ? 0.35 : 0.15;
         });
 
       return forceSimulation(seededNodes)
@@ -218,10 +223,10 @@ export function useForceLayout(
           }).strength((node) => {
             if (isLocalContext && localRootNodeId) {
               if (node.id === localRootNodeId) {
-                return 0.95;
+                return 0.72;  // Reduced from 0.95 to allow more natural spreading
               }
               const role = localRoleMap.get(node.id) ?? 'other';
-              return role === 'in' || role === 'out' ? 0.86 : 0.18;
+              return role === 'in' || role === 'out' ? 0.64 : 0.15;  // Reduced from 0.86/0.18
             }
             return parseXppr(node.xppr) !== null ? 0.94 : 0.32;
           })
@@ -233,7 +238,7 @@ export function useForceLayout(
             const topBound = 48;
             const bottomBound = Math.max(168, height - 48);
             return topBound + categoryYNorm * (bottomBound - topBound);
-          }).strength(() => 0.22)
+          }).strength(() => isLocalContext ? 0.16 : 0.22)
         )
         .alpha(0.6)
         .alphaDecay(alphaDecay)
@@ -275,13 +280,17 @@ export function useForceLayout(
           .distance((d: SimLink) => {
             const base = d.type === 'CALLS' ? 64 : 54;
             const weight = d.weight ?? 1;
-            return base + Math.min(22, weight * (isLarge ? 1.5 : 2));
+            // In local context, use shorter link distances for more compact layout
+            const distMultiplier = isLocalContext ? 1.2 : (isLarge ? 1.5 : 2);
+            return base + Math.min(18, weight * distMultiplier);
           })
           .strength((d: SimLink) => {
             if (isLocalContext && localRootNodeId && !linkTouchesRoot(d, localRootNodeId)) {
-              return 0;
+              // In local context, allow reduced force between non-root nodes for cohesion
+              return 0.12;
             }
-            return isLocalContext ? 0.22 : 0.15;
+            // Stronger link forces in local context to pull nodes together
+            return isLocalContext ? 0.35 : 0.15;
           });
 
         const simulation = webGpuForces
@@ -327,10 +336,10 @@ export function useForceLayout(
             }).strength((node: SimNode) => {
               if (isLocalContext && localRootNodeId) {
                 if (node.id === localRootNodeId) {
-                  return 0.95;
+                  return 0.72;  // Reduced from 0.95 to allow more natural spreading
                 }
                 const role = localRoleMap.get(node.id) ?? 'other';
-                return role === 'in' || role === 'out' ? 0.86 : 0.18;
+                return role === 'in' || role === 'out' ? 0.64 : 0.15;  // Reduced from 0.86/0.18
               }
               return parseXppr(node.xppr) !== null ? 0.94 : 0.32;
             })
@@ -344,7 +353,7 @@ export function useForceLayout(
                 const bottomBound = Math.max(168, height - 48);
                 return topBound + categoryYNorm * (bottomBound - topBound);
               })
-              .strength(() => 0.22)
+              .strength(() => isLocalContext ? 0.16 : 0.22)
           )
           .alphaDecay(alphaDecay)
           .velocityDecay(0.4);
@@ -541,4 +550,3 @@ function computeLocalRoleMap(links: SimLink[], localRootNodeId: string | null) {
 
   return roles;
 }
-

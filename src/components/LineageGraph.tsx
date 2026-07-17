@@ -1321,22 +1321,35 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
     setPendingFocusId(nodeId);
   }
 
-  function panToNode(node: SimNode, zoomScale: number, duration = 280) {
-    if (!svgRef.current || !zoomBehaviorRef.current) {
-      return;
-    }
-    const nodeX = node.x + 85;
-    const nodeY = node.y + 24;
-    const tx = width / 2 - (nodeX * zoomScale);
-    const ty = height / 2 - (nodeY * zoomScale);
-    const targetTransform = zoomIdentity.translate(tx, ty).scale(zoomScale);
+   function panToNode(node: SimNode, zoomScale: number, duration = 280) {
+     if (!svgRef.current || !zoomBehaviorRef.current) {
+       return;
+     }
+     const nodeX = node.x + 85;
+     const nodeY = node.y + 24;
+     const tx = width / 2 - (nodeX * zoomScale);
+     const ty = height / 2 - (nodeY * zoomScale);
+     const targetTransform = zoomIdentity.translate(tx, ty).scale(zoomScale);
 
-    select(svgRef.current)
-      .transition()
-      .duration(duration)
-      .ease(easeCubicOut)
-      .call(zoomBehaviorRef.current.transform as never, targetTransform);
-  }
+     select(svgRef.current)
+       .transition()
+       .duration(duration)
+       .ease(easeCubicOut)
+       .call(zoomBehaviorRef.current.transform as never, targetTransform);
+   }
+
+   function jumpToNode(node: SimNode, zoomScale: number = 1) {
+     if (!svgRef.current || !zoomBehaviorRef.current) {
+       return;
+     }
+     const nodeX = node.x + 85;
+     const nodeY = node.y + 24;
+     const tx = width / 2 - (nodeX * zoomScale);
+     const ty = height / 2 - (nodeY * zoomScale);
+     const targetTransform = zoomIdentity.translate(tx, ty).scale(zoomScale);
+     // Immediate jump without animation
+     select(svgRef.current).call(zoomBehaviorRef.current.transform as never, targetTransform);
+   }
 
   const enterLocalContext = useCallback((nodeId: string) => {
     if (!isLocalContext) {
@@ -1412,35 +1425,42 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
       .call(zoomBehaviorRef.current.transform as never, targetTransform);
   }
 
-   useEffect(() => {
-     function onKeyDown(event: KeyboardEvent) {
-       const target = event.target;
-       const isTypingTarget =
-         target instanceof HTMLInputElement ||
-         target instanceof HTMLTextAreaElement ||
-         target instanceof HTMLSelectElement;
-       if (isTypingTarget) {
-         return;
-       }
+    useEffect(() => {
+      function onKeyDown(event: KeyboardEvent) {
+        const target = event.target;
+        const isTypingTarget =
+          target instanceof HTMLInputElement ||
+          target instanceof HTMLTextAreaElement ||
+          target instanceof HTMLSelectElement;
+        if (isTypingTarget) {
+          return;
+        }
 
-       if (event.key === 'Escape') {
-         if (isLocalContext) {
-           exitLocalContext();
-         } else {
-           setSelectedNodeId(null);
-           setHoveredNodeId(null);
-         }
-         return;
-       }
-       if (event.key === 'r' || event.key === 'R') {
-         event.preventDefault();
-         resetZoomView();
-       }
-     }
+        if (event.key === 'Escape') {
+          if (isLocalContext) {
+            exitLocalContext();
+          } else {
+            // Immediately jump to selected node before clearing selection
+            if (selectedNodeId) {
+              const selectedNode = nodeMap.get(selectedNodeId);
+              if (selectedNode) {
+                jumpToNode(selectedNode, 1);
+              }
+            }
+            setSelectedNodeId(null);
+            setHoveredNodeId(null);
+          }
+          return;
+        }
+        if (event.key === 'r' || event.key === 'R') {
+          event.preventDefault();
+          resetZoomView();
+        }
+      }
 
-     window.addEventListener('keydown', onKeyDown);
-     return () => window.removeEventListener('keydown', onKeyDown);
-   }, [isLocalContext, exitLocalContext]);
+      window.addEventListener('keydown', onKeyDown);
+      return () => window.removeEventListener('keydown', onKeyDown);
+    }, [isLocalContext, exitLocalContext, selectedNodeId, nodeMap]);
 
   function renderNodeCard(node: SimNode) {
     const faded = dimSet ? !dimSet.has(node.id) : false;
@@ -1732,18 +1752,25 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
          ref={stageRef}
          className={`graph-stage ${isLocalContext ? 'local-mode' : ''}`}
          style={{ width: canvasWidth, height: canvasHeight }}
-        onClick={(event) => {
-          const target = event.target;
-          if (target instanceof Element && target.closest('.node-card')) {
-            return;
-          }
-          if (isLocalContext) {
-            exitLocalContext();
-            return;
-          }
-          setSelectedNodeId(null);
-          setHoveredNodeId(null);
-        }}
+         onClick={(event) => {
+           const target = event.target;
+           if (target instanceof Element && target.closest('.node-card')) {
+             return;
+           }
+           if (isLocalContext) {
+             exitLocalContext();
+             return;
+           }
+           // Immediately jump to selected node before clearing selection
+           if (selectedNodeId) {
+             const selectedNode = nodeMap.get(selectedNodeId);
+             if (selectedNode) {
+               jumpToNode(selectedNode, 1);
+             }
+           }
+           setSelectedNodeId(null);
+           setHoveredNodeId(null);
+         }}
       >
          {showHelpPanel && (
            <div className="overlay-panel overlay-help" style={{ left: helpPanelPos.x, top: helpPanelPos.y }}>
