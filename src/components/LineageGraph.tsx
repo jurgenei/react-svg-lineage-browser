@@ -52,7 +52,7 @@ interface GraphUiPrefs {
   autoZoomEnabled: boolean;
   showDirectEdges: boolean;
   orthogonalPorts: boolean;
-  routingMode: 'smooth' | 'manhattan';
+  routingMode: 'smooth' | 'manhattan' | 'octolinear';
   edgeMode: 'none' | 'soft' | 'grouped';
   showHelpPanel: boolean;
   showLegendPanel: boolean;
@@ -74,6 +74,13 @@ interface DragPanelState {
 }
 
 const GRAPH_UI_PREFS_KEY = 'lineage.exploring.graphUiPrefs.v1';
+
+const OCTOLINEAR_PRIMARY_OFFSETS = [0, 24, -24, 48, -48];
+const OCTOLINEAR_SECONDARY_OFFSETS = [72, -72, 96, -96];
+const OCTOLINEAR_CLEARANCE = 22;
+const OCTOLINEAR_OBSTACLE_RANGE = 420;
+const OCTOLINEAR_CACHE_LIMIT = 1200;
+const octolinearRouteCache = new Map<string, Array<{ x: number; y: number }>>();
 
 function readGraphUiPrefs(): Partial<GraphUiPrefs> {
   if (typeof window === 'undefined') {
@@ -126,7 +133,7 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
    const [autoZoomEnabled, setAutoZoomEnabled] = useState(initialPrefs.autoZoomEnabled ?? true);
   const [showDirectEdges, setShowDirectEdges] = useState(initialPrefs.showDirectEdges ?? false);
   const [orthogonalPorts, setOrthogonalPorts] = useState(initialPrefs.orthogonalPorts ?? true);
-  const [routingMode, setRoutingMode] = useState<'smooth' | 'manhattan'>(initialPrefs.routingMode ?? 'smooth');
+  const [routingMode, setRoutingMode] = useState<'smooth' | 'manhattan' | 'octolinear'>(initialPrefs.routingMode ?? 'smooth');
   const [edgeMode, setEdgeMode] = useState<'none' | 'soft' | 'grouped'>(initialPrefs.edgeMode ?? 'soft');
    const [showHelpPanel, setShowHelpPanel] = useState(initialPrefs.showHelpPanel ?? false);
    const [showLegendPanel, setShowLegendPanel] = useState(initialPrefs.showLegendPanel ?? false);
@@ -1707,6 +1714,18 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
             item.sharedSourcePort,
             item.sharedTargetPort
           )
+        : routingMode === 'octolinear'
+          ? octolinearEdgePath(
+              item.source,
+              item.target,
+              nodesWithManualPositions,
+              nodeSizes,
+              orthogonalPorts,
+              item.parallelIndex,
+              item.parallelTotal,
+              item.sharedSourcePort,
+              item.sharedTargetPort
+            )
         : edgePath(
             item.source,
             item.target,
@@ -1827,9 +1846,10 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
         </label>
         <label>
           Routing:
-          <select value={routingMode} onChange={(e) => setRoutingMode(e.target.value as 'smooth' | 'manhattan')}>
+          <select value={routingMode} onChange={(e) => setRoutingMode(e.target.value as 'smooth' | 'manhattan' | 'octolinear')}>
             <option value="smooth">smooth</option>
             <option value="manhattan">manhattan</option>
+            <option value="octolinear">octolinear</option>
           </select>
         </label>
         <button onClick={resetZoomView}>Reset zoom</button>
@@ -2342,6 +2362,442 @@ function manhattanRoutePoints(
     { x: tx, y: my },
     { x: tx, y: ty }
   ];
+}
+
+function octolinearEdgePath(
+  source: SimNode,
+  target: SimNode,
+  allNodes: SimNode[],
+  nodeSizes: Map<string, { width: number; height: number }>,
+  orthogonalPorts = false,
+  parallelIndex = 0,
+  parallelTotal = 1,
+  sharedSourcePort: AnchorPoint | null = null,
+  sharedTargetPort: AnchorPoint | null = null
+): string {
+  const points = octolinearRoutePoints(
+    source,
+    target,
+    allNodes,
+    nodeSizes,
+    orthogonalPorts,
+    parallelIndex,
+    parallelTotal,
+    sharedSourcePort,
+    sharedTargetPort
+  );
+  return roundedOrthogonalPath(points, 12);
+}
+
+function octolinearRoutePoints(
+  source: SimNode,
+  target: SimNode,
+  allNodes: SimNode[],
+  nodeSizes: Map<string, { width: number; height: number }>,
+  orthogonalPorts = false,
+  parallelIndex = 0,
+  parallelTotal = 1,
+  sharedSourcePort: AnchorPoint | null = null,
+  sharedTargetPort: AnchorPoint | null = null
+): Array<{ x: number; y: number }> {
+  const anchors = getAnchoredEndpoints(
+    source,
+    target,
+    nodeSizes,
+    parallelIndex,
+    parallelTotal,
+    orthogonalPorts,
+    sharedSourcePort,
+    sharedTargetPort
+  );
+
+  const start = { x: anchors.start.x, y: anchors.start.y };
+  const end = { x: anchors.end.x, y: anchors.end.y };
+
+  const stubLength = orthogonalPorts ? 24 : 14;
+  const startStub = {
+    x: start.x + anchors.startNormal.x * stubLength,
+    y: start.y + anchors.startNormal.y * stubLength
+  };
+  const endStub = {
+    x: end.x + anchors.endNormal.x * stubLength,
+    y: end.y + anchors.endNormal.y * stubLength
+  };
+
+  const sourceRect = getNodeRect(source, nodeSizes);
+  const targetRect = getNodeRect(target, nodeSizes);
+  const obstacles = collectOctolinearObstacles(allNodes, nodeSizes, source, target, startStub, endStub);
+  const cacheKey = octolinearCacheKey(start, end, startStub, endStub, anchors.start.side, anchors.end.side, obstacles);
+  const cached = octolinearRouteCache.get(cacheKey);
+  if (cached) {
+    return cached;
+  }
+
+  const coreCandidates = buildOctolinearCoreCandidates(startStub, endStub, OCTOLINEAR_PRIMARY_OFFSETS);
+  const fullCandidates = coreCandidates.map((core) => [start, startStub, ...core, endStub, end]);
+
+  let best = fullCandidates[0] ?? [start, end];
+  let bestScore = Number.POSITIVE_INFINITY;
+
+  for (const candidate of fullCandidates) {
+    const intersections = countRouteObstacleIntersections(candidate, obstacles);
+    const sourcePenalty = countRouteObstacleIntersections(candidate, [inflateRect(sourceRect, 6)]);
+    const targetPenalty = countRouteObstacleIntersections(candidate, [inflateRect(targetRect, 6)]);
+    const length = polylineLength(candidate);
+    const bends = countPolylineBends(candidate);
+    const backtrack = routeBacktrackPenalty(candidate, startStub, endStub);
+    const zigzag = routeShortSegmentPenalty(candidate);
+    const drift = routeBaselineDriftPenalty(candidate, startStub, endStub);
+    const score =
+      intersections * 1_000_000 +
+      (sourcePenalty + targetPenalty) * 400_000 +
+      bends * 165 +
+      backtrack * 260 +
+      zigzag * 110 +
+      drift * 0.08 +
+      length;
+    if (score < bestScore) {
+      bestScore = score;
+      best = candidate;
+    }
+  }
+
+  // Escalate to wider metro offsets only if all close candidates still collide heavily.
+  const bestCollisions = countRouteObstacleIntersections(best, obstacles);
+  if (bestCollisions > 0 && OCTOLINEAR_SECONDARY_OFFSETS.length > 0) {
+    const widenedOffsets = OCTOLINEAR_PRIMARY_OFFSETS.concat(OCTOLINEAR_SECONDARY_OFFSETS);
+    const secondaryCandidates = buildOctolinearCoreCandidates(startStub, endStub, widenedOffsets).map((core) => [start, startStub, ...core, endStub, end]);
+    for (const candidate of secondaryCandidates) {
+      const intersections = countRouteObstacleIntersections(candidate, obstacles);
+      const sourcePenalty = countRouteObstacleIntersections(candidate, [inflateRect(sourceRect, 6)]);
+      const targetPenalty = countRouteObstacleIntersections(candidate, [inflateRect(targetRect, 6)]);
+      const length = polylineLength(candidate);
+      const bends = countPolylineBends(candidate);
+      const backtrack = routeBacktrackPenalty(candidate, startStub, endStub);
+      const zigzag = routeShortSegmentPenalty(candidate);
+      const drift = routeBaselineDriftPenalty(candidate, startStub, endStub);
+      const score =
+        intersections * 1_000_000 +
+        (sourcePenalty + targetPenalty) * 400_000 +
+        bends * 165 +
+        backtrack * 260 +
+        zigzag * 110 +
+        drift * 0.08 +
+        length;
+      if (score < bestScore) {
+        bestScore = score;
+        best = candidate;
+      }
+    }
+  }
+
+  if (!Number.isFinite(bestScore)) {
+    return manhattanRoutePoints(source, target, nodeSizes, orthogonalPorts, parallelIndex, parallelTotal, sharedSourcePort, sharedTargetPort);
+  }
+
+  setOctolinearCache(cacheKey, best);
+  return best;
+}
+
+function buildOctolinearCoreCandidates(
+  start: { x: number; y: number },
+  end: { x: number; y: number },
+  offsets: readonly number[]
+): Array<Array<{ x: number; y: number }>> {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const absDx = Math.abs(dx);
+  const absDy = Math.abs(dy);
+
+  if (absDx < 1e-6 || absDy < 1e-6) {
+    return [[start, end]];
+  }
+
+  const sx = Math.sign(dx) || 1;
+  const sy = Math.sign(dy) || 1;
+  const diag = Math.min(absDx, absDy);
+  const halfH = (absDx - diag) * 0.5;
+  const halfV = (absDy - diag) * 0.5;
+
+  const candidates: Array<Array<{ x: number; y: number }>> = [];
+
+  for (const off of offsets) {
+    // Horizontal stub -> diagonal -> horizontal stub
+    const hx = start.x + sx * halfH + off;
+    const h1 = { x: hx, y: start.y };
+    const h2 = { x: hx + sx * diag, y: start.y + sy * diag };
+    candidates.push([start, h1, h2, end]);
+
+    // Vertical stub -> diagonal -> vertical stub
+    const vy = start.y + sy * halfV + off;
+    const v1 = { x: start.x, y: vy };
+    const v2 = { x: start.x + sx * diag, y: vy + sy * diag };
+    candidates.push([start, v1, v2, end]);
+  }
+
+  return candidates;
+}
+
+function collectOctolinearObstacles(
+  allNodes: SimNode[],
+  nodeSizes: Map<string, { width: number; height: number }>,
+  source: SimNode,
+  target: SimNode,
+  startStub: { x: number; y: number },
+  endStub: { x: number; y: number }
+): Array<{ x: number; y: number; width: number; height: number }> {
+  const minX = Math.min(startStub.x, endStub.x) - OCTOLINEAR_OBSTACLE_RANGE;
+  const maxX = Math.max(startStub.x, endStub.x) + OCTOLINEAR_OBSTACLE_RANGE;
+  const minY = Math.min(startStub.y, endStub.y) - OCTOLINEAR_OBSTACLE_RANGE;
+  const maxY = Math.max(startStub.y, endStub.y) + OCTOLINEAR_OBSTACLE_RANGE;
+
+  return allNodes
+    .filter((node) => node.id !== source.id && node.id !== target.id)
+    .map((node) => inflateRect(getNodeRect(node, nodeSizes), OCTOLINEAR_CLEARANCE))
+    .filter((rect) => rectIntersectsBounds(rect, minX, minY, maxX, maxY));
+}
+
+function rectIntersectsBounds(
+  rect: { x: number; y: number; width: number; height: number },
+  minX: number,
+  minY: number,
+  maxX: number,
+  maxY: number
+): boolean {
+  return rect.x <= maxX && rect.x + rect.width >= minX && rect.y <= maxY && rect.y + rect.height >= minY;
+}
+
+function routeBacktrackPenalty(
+  points: Array<{ x: number; y: number }>,
+  start: { x: number; y: number },
+  end: { x: number; y: number }
+): number {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const length = Math.hypot(dx, dy);
+  if (length < 1e-6) {
+    return 0;
+  }
+  const ux = dx / length;
+  const uy = dy / length;
+  let penalty = 0;
+  for (let i = 0; i < points.length - 1; i += 1) {
+    const sx = points[i + 1].x - points[i].x;
+    const sy = points[i + 1].y - points[i].y;
+    const proj = sx * ux + sy * uy;
+    if (proj < -1e-6) {
+      penalty += Math.abs(proj);
+    }
+  }
+  return penalty;
+}
+
+function routeShortSegmentPenalty(points: Array<{ x: number; y: number }>): number {
+  let penalty = 0;
+  for (let i = 0; i < points.length - 1; i += 1) {
+    const segLength = Math.hypot(points[i + 1].x - points[i].x, points[i + 1].y - points[i].y);
+    if (segLength < 18) {
+      penalty += 18 - segLength;
+    }
+  }
+  return penalty;
+}
+
+function routeBaselineDriftPenalty(
+  points: Array<{ x: number; y: number }>,
+  start: { x: number; y: number },
+  end: { x: number; y: number }
+): number {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const length = Math.hypot(dx, dy);
+  if (length < 1e-6) {
+    return 0;
+  }
+  let drift = 0;
+  for (let i = 1; i < points.length - 1; i += 1) {
+    const px = points[i].x - start.x;
+    const py = points[i].y - start.y;
+    drift += Math.abs(px * dy - py * dx) / length;
+  }
+  return drift;
+}
+
+function octolinearCacheKey(
+  start: { x: number; y: number },
+  end: { x: number; y: number },
+  startStub: { x: number; y: number },
+  endStub: { x: number; y: number },
+  startSide: NodeSide,
+  endSide: NodeSide,
+  obstacles: Array<{ x: number; y: number; width: number; height: number }>
+): string {
+  const obstacleSignature = obstacles
+    .map((rect) => `${quantizeCoord(rect.x)}:${quantizeCoord(rect.y)}:${quantizeCoord(rect.width)}:${quantizeCoord(rect.height)}`)
+    .sort()
+    .join('|');
+  return [
+    quantizeCoord(start.x),
+    quantizeCoord(start.y),
+    quantizeCoord(end.x),
+    quantizeCoord(end.y),
+    quantizeCoord(startStub.x),
+    quantizeCoord(startStub.y),
+    quantizeCoord(endStub.x),
+    quantizeCoord(endStub.y),
+    startSide,
+    endSide,
+    obstacleSignature
+  ].join(';');
+}
+
+function quantizeCoord(value: number): number {
+  return Math.round(value / 8);
+}
+
+function setOctolinearCache(key: string, route: Array<{ x: number; y: number }>) {
+  if (octolinearRouteCache.has(key)) {
+    octolinearRouteCache.delete(key);
+  }
+  octolinearRouteCache.set(key, route);
+  if (octolinearRouteCache.size <= OCTOLINEAR_CACHE_LIMIT) {
+    return;
+  }
+  const oldestKey = octolinearRouteCache.keys().next().value;
+  if (oldestKey) {
+    octolinearRouteCache.delete(oldestKey);
+  }
+}
+
+function inflateRect(
+  rect: { x: number; y: number; width: number; height: number },
+  padding: number
+): { x: number; y: number; width: number; height: number } {
+  return {
+    x: rect.x - padding,
+    y: rect.y - padding,
+    width: rect.width + padding * 2,
+    height: rect.height + padding * 2
+  };
+}
+
+function countRouteObstacleIntersections(
+  points: Array<{ x: number; y: number }>,
+  obstacles: Array<{ x: number; y: number; width: number; height: number }>
+): number {
+  let count = 0;
+  for (let i = 0; i < points.length - 1; i += 1) {
+    const a = points[i];
+    const b = points[i + 1];
+    for (const rect of obstacles) {
+      if (segmentIntersectsRect(a, b, rect)) {
+        count += 1;
+      }
+    }
+  }
+  return count;
+}
+
+function segmentIntersectsRect(
+  a: { x: number; y: number },
+  b: { x: number; y: number },
+  rect: { x: number; y: number; width: number; height: number }
+): boolean {
+  if (pointInRect(a, rect) || pointInRect(b, rect)) {
+    return true;
+  }
+
+  const p1 = { x: rect.x, y: rect.y };
+  const p2 = { x: rect.x + rect.width, y: rect.y };
+  const p3 = { x: rect.x + rect.width, y: rect.y + rect.height };
+  const p4 = { x: rect.x, y: rect.y + rect.height };
+
+  return (
+    segmentsIntersect(a, b, p1, p2) ||
+    segmentsIntersect(a, b, p2, p3) ||
+    segmentsIntersect(a, b, p3, p4) ||
+    segmentsIntersect(a, b, p4, p1)
+  );
+}
+
+function pointInRect(
+  point: { x: number; y: number },
+  rect: { x: number; y: number; width: number; height: number }
+): boolean {
+  return (
+    point.x >= rect.x - 1e-6 &&
+    point.x <= rect.x + rect.width + 1e-6 &&
+    point.y >= rect.y - 1e-6 &&
+    point.y <= rect.y + rect.height + 1e-6
+  );
+}
+
+function segmentsIntersect(
+  a: { x: number; y: number },
+  b: { x: number; y: number },
+  c: { x: number; y: number },
+  d: { x: number; y: number }
+): boolean {
+  const o1 = orient(a, b, c);
+  const o2 = orient(a, b, d);
+  const o3 = orient(c, d, a);
+  const o4 = orient(c, d, b);
+
+  if (Math.abs(o1) < 1e-6 && onSegment(a, c, b)) return true;
+  if (Math.abs(o2) < 1e-6 && onSegment(a, d, b)) return true;
+  if (Math.abs(o3) < 1e-6 && onSegment(c, a, d)) return true;
+  if (Math.abs(o4) < 1e-6 && onSegment(c, b, d)) return true;
+
+  return (o1 > 0) !== (o2 > 0) && (o3 > 0) !== (o4 > 0);
+}
+
+function orient(
+  a: { x: number; y: number },
+  b: { x: number; y: number },
+  c: { x: number; y: number }
+): number {
+  return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+}
+
+function onSegment(
+  a: { x: number; y: number },
+  b: { x: number; y: number },
+  c: { x: number; y: number }
+): boolean {
+  return (
+    b.x >= Math.min(a.x, c.x) - 1e-6 &&
+    b.x <= Math.max(a.x, c.x) + 1e-6 &&
+    b.y >= Math.min(a.y, c.y) - 1e-6 &&
+    b.y <= Math.max(a.y, c.y) + 1e-6
+  );
+}
+
+function polylineLength(points: Array<{ x: number; y: number }>): number {
+  let total = 0;
+  for (let i = 0; i < points.length - 1; i += 1) {
+    total += Math.hypot(points[i + 1].x - points[i].x, points[i + 1].y - points[i].y);
+  }
+  return total;
+}
+
+function countPolylineBends(points: Array<{ x: number; y: number }>): number {
+  let bends = 0;
+  for (let i = 1; i < points.length - 1; i += 1) {
+    const v1x = points[i].x - points[i - 1].x;
+    const v1y = points[i].y - points[i - 1].y;
+    const v2x = points[i + 1].x - points[i].x;
+    const v2y = points[i + 1].y - points[i].y;
+    const l1 = Math.hypot(v1x, v1y);
+    const l2 = Math.hypot(v2x, v2y);
+    if (l1 < 1e-6 || l2 < 1e-6) {
+      continue;
+    }
+    const cross = Math.abs(v1x * v2y - v1y * v2x);
+    if (cross > 1e-6) {
+      bends += 1;
+    }
+  }
+  return bends;
 }
 
 interface OrthSegment {
