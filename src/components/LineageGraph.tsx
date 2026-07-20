@@ -646,100 +646,186 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
       });
     }
 
-    // Outgoing edges with the same normalized label leave from a shared source port.
-    const outgoingBySourceLabel = new Map<string, EdgeRenderItem[]>();
-    for (const item of items) {
-      if (item.isBidirectionalBundle || item.labelLines.length !== 1) {
-        continue;
-      }
-      const normalized = item.labelLines[0].trim().toLowerCase();
-      if (!normalized) {
-        continue;
-      }
-      const key = `${item.source.id}|${normalized}`;
-      const arr = outgoingBySourceLabel.get(key) ?? [];
-      arr.push(item);
-      outgoingBySourceLabel.set(key, arr);
-    }
+    if (edgeMode === 'grouped') {
+      // Analyze colors per node+side to assign discrete port positions
+      const colorsByNodeSide = new Map<string, Set<string>>();
+      const colorGroupsPerNodeSide = new Map<string, Array<{ color: string; position: 'begin' | 'middle' | 'end' }>>();
 
-    for (const groupItems of outgoingBySourceLabel.values()) {
-      if (groupItems.length < 2) {
-        continue;
+      // Count unique colors for each node + side combination
+      for (const item of items) {
+        // Source side
+        const sourceKey = `${item.source.id}|source`;
+        if (!colorsByNodeSide.has(sourceKey)) {
+          colorsByNodeSide.set(sourceKey, new Set());
+        }
+        colorsByNodeSide.get(sourceKey)!.add(item.bundleColor);
+
+        // Target side
+        const targetKey = `${item.target.id}|target`;
+        if (!colorsByNodeSide.has(targetKey)) {
+          colorsByNodeSide.set(targetKey, new Set());
+        }
+        colorsByNodeSide.get(targetKey)!.add(item.bundleColor);
       }
-      const source = groupItems[0].source;
-      const sourceRect = getNodeRect(source, nodeSizes);
-      const sourceCenter = getRectCenter(sourceRect);
-      let sumX = 0;
-      let sumY = 0;
-      for (const item of groupItems) {
-        const targetRect = getNodeRect(item.target, nodeSizes);
-        const targetCenter = getRectCenter(targetRect);
-        sumX += targetCenter.x;
-        sumY += targetCenter.y;
+
+      // Assign port positions based on color count
+      for (const [key, colors] of colorsByNodeSide.entries()) {
+        const colorArray = Array.from(colors).sort();
+        let positions: Array<{ color: string; position: 'begin' | 'middle' | 'end' }>;
+
+        if (colorArray.length === 1) {
+          // 1 color: use middle port only
+          positions = [{ color: colorArray[0], position: 'middle' }];
+        } else if (colorArray.length === 2) {
+          // 2 colors: use begin and end, skip middle
+          // Purple gets preference for first position if present
+          const hasPurple = colorArray.includes('purple');
+          if (hasPurple) {
+            const other = colorArray.find(c => c !== 'purple')!;
+            positions = [
+              { color: 'purple', position: 'begin' },
+              { color: other, position: 'end' }
+            ];
+          } else {
+            positions = [
+              { color: colorArray[0], position: 'begin' },
+              { color: colorArray[1], position: 'end' }
+            ];
+          }
+        } else {
+          // 3+ colors: use all ports, purple goes to middle
+          const purpleIdx = colorArray.indexOf('purple');
+          if (purpleIdx !== -1) {
+            // Remove purple and assign it to middle
+            const others = colorArray.filter(c => c !== 'purple');
+            positions = [
+              { color: others[0] ?? 'default', position: 'begin' },
+              { color: 'purple', position: 'middle' },
+              { color: others[1] ?? 'default', position: 'end' }
+            ];
+          } else {
+            positions = [
+              { color: colorArray[0], position: 'begin' },
+              { color: colorArray[1], position: 'middle' },
+              { color: colorArray[2], position: 'end' }
+            ];
+          }
+        }
+
+        colorGroupsPerNodeSide.set(key, positions);
       }
-      const avgTarget = {
-        x: sumX / groupItems.length,
-        y: sumY / groupItems.length
+
+      const portAxisQuantum = 6;
+      const quantizePortAxis = (value: number) => Math.round(value / portAxisQuantum);
+      const portSignature = (point: AnchorPoint) => {
+        const axis = point.side === 'left' || point.side === 'right' ? point.y : point.x;
+        return `${point.side}:${quantizePortAxis(axis)}`;
       };
-      // Fallback to right-side exit if direction is degenerate.
-      const sharedPort =
-        Math.abs(avgTarget.x - sourceCenter.x) < 1e-6 && Math.abs(avgTarget.y - sourceCenter.y) < 1e-6
-          ? ({ x: sourceRect.x + sourceRect.width, y: sourceCenter.y, side: 'right' } as AnchorPoint)
-          : anchorToRectBorder(sourceRect, avgTarget);
 
-      for (const item of groupItems) {
-        item.sharedSourcePort = sharedPort;
-      }
-    }
-
-    // Incoming edges with the same normalized label enter a shared target port.
-    const incomingByTargetLabel = new Map<string, EdgeRenderItem[]>();
-    for (const item of items) {
-      if (item.isBidirectionalBundle || item.labelLines.length !== 1) {
-        continue;
-      }
-      const normalized = item.labelLines[0].trim().toLowerCase();
-      if (!normalized) {
-        continue;
-      }
-      const key = `${item.target.id}|${normalized}`;
-      const arr = incomingByTargetLabel.get(key) ?? [];
-      arr.push(item);
-      incomingByTargetLabel.set(key, arr);
-    }
-
-    for (const groupItems of incomingByTargetLabel.values()) {
-      if (groupItems.length < 2) {
-        continue;
-      }
-      const target = groupItems[0].target;
-      const targetRect = getNodeRect(target, nodeSizes);
-      const targetCenter = getRectCenter(targetRect);
-      let sumX = 0;
-      let sumY = 0;
-      for (const item of groupItems) {
-        const sourceRect = getNodeRect(item.source, nodeSizes);
-        const sourceCenter = getRectCenter(sourceRect);
-        sumX += sourceCenter.x;
-        sumY += sourceCenter.y;
-      }
-      const avgSource = {
-        x: sumX / groupItems.length,
-        y: sumY / groupItems.length
+      // Helper to get port position for a color on a node side
+      const getPortPosition = (nodeId: string, direction: 'source' | 'target', color: string): 'begin' | 'middle' | 'end' => {
+        const key = `${nodeId}|${direction}`;
+        const groups = colorGroupsPerNodeSide.get(key) || [];
+        const group = groups.find(g => g.color === color);
+        return group?.position || 'middle';
       };
-      // Fallback to left-side entry if direction is degenerate.
-      const sharedPort =
-        Math.abs(avgSource.x - targetCenter.x) < 1e-6 && Math.abs(avgSource.y - targetCenter.y) < 1e-6
-          ? ({ x: targetRect.x, y: targetCenter.y, side: 'left' } as AnchorPoint)
-          : anchorToRectBorder(targetRect, avgSource);
 
-      for (const item of groupItems) {
-        item.sharedTargetPort = sharedPort;
+      const baseAnchorsByItem = new Map<string, { start: AnchorPoint; end: AnchorPoint }>();
+      for (const item of items) {
+        const sourcePortPos = getPortPosition(item.source.id, 'source', item.bundleColor);
+        const targetPortPos = getPortPosition(item.target.id, 'target', item.bundleColor);
+
+        const anchors = getAnchoredEndpoints(
+          item.source,
+          item.target,
+          nodeSizes,
+          item.parallelIndex,
+          item.parallelTotal,
+          orthogonalPorts,
+          null,
+          null,
+          sourcePortPos,
+          targetPortPos
+        );
+        baseAnchorsByItem.set(item.key, { start: anchors.start, end: anchors.end });
+      }
+      // Bundle outgoing edges only when source + label + source-port match.
+      const outgoingBySourceLabelPort = new Map<string, EdgeRenderItem[]>();
+      for (const item of items) {
+        if (item.labelLines.length !== 1) {
+          continue;
+        }
+        const normalized = item.labelLines[0].trim().toLowerCase();
+        if (!normalized) {
+          continue;
+        }
+        const anchors = baseAnchorsByItem.get(item.key);
+        if (!anchors) {
+          continue;
+        }
+        const key = `${item.source.id}|${normalized}|${portSignature(anchors.start)}`;
+        const arr = outgoingBySourceLabelPort.get(key) ?? [];
+        arr.push(item);
+        outgoingBySourceLabelPort.set(key, arr);
+      }
+      for (const groupItems of outgoingBySourceLabelPort.values()) {
+        if (groupItems.length < 2) {
+          continue;
+        }
+        const anchor = baseAnchorsByItem.get(groupItems[0].key)?.start;
+        if (!anchor) {
+          continue;
+        }
+        const sharedPort: AnchorPoint = { x: anchor.x, y: anchor.y, side: anchor.side };
+        for (const item of groupItems) {
+          item.sharedSourcePort = sharedPort;
+        }
+      }
+      // Bundle incoming edges only when target + label + target-port match.
+      const incomingByTargetLabelPort = new Map<string, EdgeRenderItem[]>();
+      for (const item of items) {
+        if (item.labelLines.length !== 1) {
+          continue;
+        }
+        const normalized = item.labelLines[0].trim().toLowerCase();
+        if (!normalized) {
+          continue;
+        }
+        const anchors = baseAnchorsByItem.get(item.key);
+        if (!anchors) {
+          continue;
+        }
+        const key = `${item.target.id}|${normalized}|${portSignature(anchors.end)}`;
+        const arr = incomingByTargetLabelPort.get(key) ?? [];
+        arr.push(item);
+        incomingByTargetLabelPort.set(key, arr);
+      }
+      for (const groupItems of incomingByTargetLabelPort.values()) {
+        if (groupItems.length < 2) {
+          continue;
+        }
+        const anchor = baseAnchorsByItem.get(groupItems[0].key)?.end;
+        if (!anchor) {
+          continue;
+        }
+        const sharedPort: AnchorPoint = { x: anchor.x, y: anchor.y, side: anchor.side };
+        for (const item of groupItems) {
+          item.sharedTargetPort = sharedPort;
+        }
+      }
+      // Assign shared ports to bidirectional bundles that don't have them yet
+      for (const item of items) {
+        if (item.isBidirectionalBundle && !item.sharedSourcePort && !item.sharedTargetPort) {
+          const anchors = baseAnchorsByItem.get(item.key);
+          if (anchors) {
+            item.sharedSourcePort = { x: anchors.start.x, y: anchors.start.y, side: anchors.start.side };
+            item.sharedTargetPort = { x: anchors.end.x, y: anchors.end.y, side: anchors.end.side };
+          }
+        }
       }
     }
-
     return items;
-  }, [renderLinks, nodeMap, highlightState, dimSet, pivotNodeId, nodeSizes]);
+  }, [renderLinks, nodeMap, highlightState, dimSet, pivotNodeId, nodeSizes, edgeMode, orthogonalPorts]);
 
   const highlightedEdgeItems = useMemo(
     () => edgeRenderItems.filter((item) => highlightedNodeIds.has(item.source.id) && highlightedNodeIds.has(item.target.id)),
@@ -801,170 +887,337 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
     return items;
   }, [displayedNonHighlightedEdgeItems, displayedHighlightedEdgeItems]);
 
+  const edgeLabelPositions = useMemo(() => {
+    const lineHeight = 13;
+    const placements: Array<{ key: string; x: number; y: number; w: number; h: number }> = [];
+    const byKey = new Map<string, { x: number; y: number }>();
+    const overlapCounts = new Map<string, number>();
+
+    const highlightedRects = Array.from(highlightedNodeIds)
+      .map((nodeId) => {
+        const node = nodeMap.get(nodeId);
+        if (!node) {
+          return null;
+        }
+        const measured = nodeSizes.get(nodeId);
+        return {
+          x: node.x,
+          y: node.y,
+          w: measured?.width ?? 190,
+          h: measured?.height ?? 48
+        };
+      })
+      .filter((rect): rect is { x: number; y: number; w: number; h: number } => rect !== null);
+
+    for (const item of emphasizedEdgeItems) {
+      if (!item.labelLines.length || item.faded) {
+        continue;
+      }
+      const { start, end } = getAnchoredEndpoints(item.source, item.target, nodeSizes, 0, 1, orthogonalPorts);
+      let baseX = (start.x + end.x) / 2;
+      let baseY = (start.y + end.y) / 2;
+      const longestLabel = item.labelLines.reduce((max, text) => Math.max(max, text.length), 0);
+      const w = Math.max(longestLabel * 6.3 + 18, 44);
+      const h = Math.max(18, item.labelLines.length * lineHeight + 8);
+
+      const step = 14;
+      let attempts = 0;
+      while (attempts < 18) {
+        const intersects = placements.some((p) => Math.abs(baseX - p.x) < (w + p.w) / 2 + 6 && Math.abs(baseY - p.y) < (h + p.h) / 2 + 4);
+        const overlapsHighlightedNode = highlightedRects.some(
+          (rect) =>
+            Math.abs(baseX - (rect.x + rect.w / 2)) < (w + rect.w) / 2 + 10 &&
+            Math.abs(baseY - (rect.y + rect.h / 2)) < (h + rect.h) / 2 + 10
+        );
+
+        if (!intersects && !overlapsHighlightedNode) {
+          break;
+        }
+        const dir = attempts % 2 === 0 ? 1 : -1;
+        const band = Math.floor(attempts / 2) + 1;
+        baseY += dir * band * step;
+        if (overlapsHighlightedNode) {
+          baseX += dir * 6;
+        }
+        attempts += 1;
+      }
+
+      placements.push({ key: item.key, x: baseX, y: baseY, w, h });
+      byKey.set(item.key, { x: baseX, y: baseY });
+      overlapCounts.set(item.key, attempts);
+    }
+
+    return { positions: byKey, overlapCounts };
+  }, [emphasizedEdgeItems, nodeSizes, orthogonalPorts, highlightedNodeIds, nodeMap]);
+
   const groupedLabelState = useMemo(() => {
     const GROUP_DELIM = '\u0001';
     const suppressInlineLabels = new Set<string>();
     const aggregatedLabels: Array<{ key: string; x: number; y: number; text: string; edgeTypeClass: string; dirClass: string }> = [];
+    const rawAggregatedLabels: Array<{
+      key: string;
+      x: number;
+      y: number;
+      text: string;
+      edgeTypeClass: string;
+      dirClass: string;
+      nodeId: string;
+      side: NodeSide;
+    }> = [];
 
-    const pickDominantEdgeTypeClass = (items: EdgeRenderItem[]) => {
-      const counts = new Map<string, number>();
-      for (const item of items) {
-        counts.set(item.edgeTypeClass, (counts.get(item.edgeTypeClass) ?? 0) + 1);
-      }
-      let winner = 'edge-flow';
-      let maxCount = -1;
-      for (const [edgeTypeClass, count] of counts.entries()) {
-        if (count > maxCount) {
-          maxCount = count;
-          winner = edgeTypeClass;
-        }
-      }
-      return winner;
-    };
-
-    const pickDominantDirClass = (items: EdgeRenderItem[]) => {
-      const counts = new Map<string, number>();
-      for (const item of items) {
-        const cls = item.dirClass || '';
-        counts.set(cls, (counts.get(cls) ?? 0) + 1);
-      }
-      let winner = '';
-      let maxCount = -1;
-      for (const [dirClass, count] of counts.entries()) {
-        if (count > maxCount) {
-          maxCount = count;
-          winner = dirClass;
-        }
-      }
-      return winner;
-    };
-
-    const pickRepresentativePoint = (items: EdgeRenderItem[], isOutgoing: boolean) => {
-      if (isOutgoing && items.length >= 2) {
-        const shared = items[0].sharedSourcePort;
-        if (shared && items.every((item) => item.sharedSourcePort && item.sharedSourcePort.side === shared.side)) {
-          const n = sideNormal(shared.side);
-          return {
-            x: shared.x + n.x * 28,
-            y: shared.y + n.y * 28
-          };
-        }
-      }
-
-      if (!isOutgoing && items.length >= 2) {
-        const shared = items[0].sharedTargetPort;
-        if (shared && items.every((item) => item.sharedTargetPort && item.sharedTargetPort.side === shared.side)) {
-          const n = sideNormal(shared.side);
-          return {
-            x: shared.x + n.x * 28,
-            y: shared.y + n.y * 28
-          };
-        }
-      }
-
-      const points = items
-        .map((item) => {
-          const anchors = getAnchoredEndpoints(
-            item.source,
-            item.target,
-            nodeSizes,
-            item.parallelIndex,
-            item.parallelTotal,
-            orthogonalPorts,
-            item.sharedSourcePort,
-            item.sharedTargetPort
-          );
-          const start = anchors.start;
-          const end = anchors.end;
-          const t = isOutgoing ? 0.22 : 0.78;
-          return {
-            x: start.x + (end.x - start.x) * t,
-            y: start.y + (end.y - start.y) * t
-          };
-        })
-        .filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
-
-      if (!points.length) {
-        return { x: 0, y: 0 };
-      }
-
-      const avgX = points.reduce((sum, point) => sum + point.x, 0) / points.length;
-      const avgY = points.reduce((sum, point) => sum + point.y, 0) / points.length;
-      let representative = points[0];
-      let bestDistance = Number.POSITIVE_INFINITY;
-      for (const point of points) {
-        const distance = Math.hypot(point.x - avgX, point.y - avgY);
-        if (distance < bestDistance) {
-          bestDistance = distance;
-          representative = point;
-        }
-      }
-      return representative;
-    };
+    if (edgeMode !== 'grouped') {
+      return { suppressInlineLabels, aggregatedLabels };
+    }
 
     const outgoingGroups = new Map<string, EdgeRenderItem[]>();
     const incomingGroups = new Map<string, EdgeRenderItem[]>();
+    const bidirectionalGroups = new Map<string, {
+      ownerNode: SimNode;
+      ownerPort: AnchorPoint;
+      label: string;
+      edgeTypeClass: string;
+      dirClass: string;
+    }>();
 
+    const placeLabelAwayFromNode = (node: SimNode, baseX: number, baseY: number, side: NodeSide, text: string) => {
+      const rect = getNodeRect(node, nodeSizes);
+      const labelWidth = Math.max(92, text.length * 6.4 + 26);
+      const labelHeight = 20;
+
+      const sideVector: Record<NodeSide, { x: number; y: number }> = {
+        top: { x: 0, y: -1 },
+        bottom: { x: 0, y: 1 },
+        left: { x: -1, y: 0 },
+        right: { x: 1, y: 0 }
+      };
+
+      const vector = sideVector[side];
+      let x = baseX + vector.x * 28;
+      let y = baseY + vector.y * 28;
+
+      const intersectsNode = (cx: number, cy: number) => {
+        const halfW = labelWidth / 2;
+        const halfH = labelHeight / 2;
+        return !(
+          cx + halfW < rect.x ||
+          cx - halfW > rect.x + rect.width ||
+          cy + halfH < rect.y ||
+          cy - halfH > rect.y + rect.height
+        );
+      };
+
+      // Push outward until the label no longer overlaps its own node.
+      let guard = 0;
+      while (intersectsNode(x, y) && guard < 10) {
+        x += vector.x * 10;
+        y += vector.y * 10;
+        guard += 1;
+      }
+
+      return { x, y };
+    };
+
+    // Group edges by available shared join point; each side can independently define a bundle.
     for (const item of emphasizedEdgeItems) {
-      if (item.faded || item.isBidirectionalBundle || item.labelLines.length !== 1) {
+      if (item.faded || item.labelLines.length !== 1) {
         continue;
       }
       const label = item.labelLines[0].trim();
       if (!label) {
         continue;
       }
-      const outgoingKey = ['out', item.source.id, label].join(GROUP_DELIM);
-      const incomingKey = ['in', item.target.id, label].join(GROUP_DELIM);
 
-      const outArr = outgoingGroups.get(outgoingKey) ?? [];
-      outArr.push(item);
-      outgoingGroups.set(outgoingKey, outArr);
+      if (item.isBidirectionalBundle) {
+        suppressInlineLabels.add(item.key);
 
-      const inArr = incomingGroups.get(incomingKey) ?? [];
-      inArr.push(item);
-      incomingGroups.set(incomingKey, inArr);
+        let ownerNode = item.source;
+        let ownerPort = item.sharedSourcePort;
+
+        // Prefer the selected-node end so purple labels are placed at the shared end in focus.
+        if (pivotNodeId && item.target.id === pivotNodeId && item.sharedTargetPort) {
+          ownerNode = item.target;
+          ownerPort = item.sharedTargetPort;
+        } else if (pivotNodeId && item.source.id === pivotNodeId && item.sharedSourcePort) {
+          ownerNode = item.source;
+          ownerPort = item.sharedSourcePort;
+        } else if (!ownerPort && item.sharedTargetPort) {
+          ownerNode = item.target;
+          ownerPort = item.sharedTargetPort;
+        }
+
+        if (ownerPort) {
+          const portX = Math.round(ownerPort.x);
+          const portY = Math.round(ownerPort.y);
+          const bidirKey = `${ownerNode.id}|${label}|${ownerPort.side}|${portX}|${portY}`;
+          if (!bidirectionalGroups.has(bidirKey)) {
+            bidirectionalGroups.set(bidirKey, {
+              ownerNode,
+              ownerPort,
+              label,
+              edgeTypeClass: item.edgeTypeClass,
+              dirClass: item.dirClass
+            });
+          }
+        }
+        continue;
+      }
+
+      if (item.sharedSourcePort) {
+        const outgoingKey = ['out', item.source.id, label, item.sharedSourcePort.side].join(GROUP_DELIM);
+        const outArr = outgoingGroups.get(outgoingKey) ?? [];
+        outArr.push(item);
+        outgoingGroups.set(outgoingKey, outArr);
+      }
+
+      // Bidirectional bundles must aggregate on one side only (source/outgoing).
+      if (item.sharedTargetPort && !item.isBidirectionalBundle) {
+        const incomingKey = ['in', item.target.id, label, item.sharedTargetPort.side].join(GROUP_DELIM);
+        const inArr = incomingGroups.get(incomingKey) ?? [];
+        inArr.push(item);
+        incomingGroups.set(incomingKey, inArr);
+      }
     }
 
     for (const [groupKey, items] of outgoingGroups.entries()) {
-      if (items.length < 2) {
-        continue;
-      }
-      const [_, sourceId, label] = groupKey.split(GROUP_DELIM);
       for (const item of items) {
         suppressInlineLabels.add(item.key);
       }
-      const representative = pickRepresentativePoint(items, true);
-      aggregatedLabels.push({
-        key: `group-out:${sourceId}:${label}`,
-        x: representative.x,
-        y: representative.y,
+
+      const sharedPort = items[0].sharedSourcePort;
+      if (!sharedPort) {
+        continue;
+      }
+      const label = items[0].labelLines[0].trim();
+      const positioned = placeLabelAwayFromNode(items[0].source, sharedPort.x, sharedPort.y, sharedPort.side, label);
+      rawAggregatedLabels.push({
+        key: `grouped-out-${groupKey}`,
+        x: positioned.x,
+        y: positioned.y,
         text: label,
-        edgeTypeClass: pickDominantEdgeTypeClass(items),
-        dirClass: pickDominantDirClass(items)
+        edgeTypeClass: items[0].edgeTypeClass,
+        dirClass: items[0].dirClass,
+        nodeId: items[0].source.id,
+        side: sharedPort.side
       });
     }
 
     for (const [groupKey, items] of incomingGroups.entries()) {
-      if (items.length < 2) {
-        continue;
-      }
-      const [_, targetId, label] = groupKey.split(GROUP_DELIM);
       for (const item of items) {
         suppressInlineLabels.add(item.key);
       }
-      const representative = pickRepresentativePoint(items, false);
-      aggregatedLabels.push({
-        key: `group-in:${targetId}:${label}`,
-        x: representative.x,
-        y: representative.y,
+      const sharedPort = items[0].sharedTargetPort;
+      // Skip incoming labels for bidirectional bundles; they get label from outgoing
+      if (items[0].isBidirectionalBundle) {
+        continue;
+      }
+      if (!sharedPort) {
+        continue;
+      }
+      const label = items[0].labelLines[0].trim();
+      const positioned = placeLabelAwayFromNode(items[0].target, sharedPort.x, sharedPort.y, sharedPort.side, label);
+      rawAggregatedLabels.push({
+        key: `grouped-in-${groupKey}`,
+        x: positioned.x,
+        y: positioned.y,
         text: label,
-        edgeTypeClass: pickDominantEdgeTypeClass(items),
-        dirClass: pickDominantDirClass(items)
+        edgeTypeClass: items[0].edgeTypeClass,
+        dirClass: items[0].dirClass,
+        nodeId: items[0].target.id,
+        side: sharedPort.side
+      });
+    }
+
+    for (const [groupKey, group] of bidirectionalGroups.entries()) {
+      const positioned = placeLabelAwayFromNode(
+        group.ownerNode,
+        group.ownerPort.x,
+        group.ownerPort.y,
+        group.ownerPort.side,
+        group.label
+      );
+      rawAggregatedLabels.push({
+        key: `grouped-bidir-${groupKey}`,
+        x: positioned.x,
+        y: positioned.y,
+        text: group.label,
+        edgeTypeClass: group.edgeTypeClass,
+        dirClass: group.dirClass,
+        nodeId: group.ownerNode.id,
+        side: group.ownerPort.side
+      });
+    }
+
+    const labelsByNodeSide = new Map<string, typeof rawAggregatedLabels>();
+    for (const label of rawAggregatedLabels) {
+      const key = `${label.nodeId}|${label.side}`;
+      const arr = labelsByNodeSide.get(key) ?? [];
+      arr.push(label);
+      labelsByNodeSide.set(key, arr);
+    }
+
+    const stackGap = 6;
+    const stackStep = 10;
+    const labelHeight = 20;
+    const labelWidth = (text: string) => Math.max(92, text.length * 6.4 + 26);
+    const sideVector: Record<NodeSide, { x: number; y: number }> = {
+      top: { x: 0, y: -1 },
+      bottom: { x: 0, y: 1 },
+      left: { x: -1, y: 0 },
+      right: { x: 1, y: 0 }
+    };
+
+    const overlaps = (
+      ax: number,
+      ay: number,
+      aw: number,
+      ah: number,
+      bx: number,
+      by: number,
+      bw: number,
+      bh: number
+    ) => Math.abs(ax - bx) < (aw + bw) / 2 + stackGap && Math.abs(ay - by) < (ah + bh) / 2 + stackGap;
+
+    for (const group of labelsByNodeSide.values()) {
+      const side = group[0].side;
+      const tangentAxis: 'x' | 'y' = side === 'top' || side === 'bottom' ? 'x' : 'y';
+      const vector = sideVector[side];
+      const placed: Array<{ x: number; y: number; w: number; h: number }> = [];
+
+      // Preserve side order, but resolve collisions by shifting along bundle direction.
+      group.sort((a, b) => (tangentAxis === 'x' ? a.x - b.x : a.y - b.y));
+
+      for (const label of group) {
+        const w = labelWidth(label.text);
+        const h = labelHeight;
+        let nextX = label.x;
+        let nextY = label.y;
+        let guard = 0;
+
+        while (placed.some((p) => overlaps(nextX, nextY, w, h, p.x, p.y, p.w, p.h)) && guard < 20) {
+          nextX += vector.x * stackStep;
+          nextY += vector.y * stackStep;
+          guard += 1;
+        }
+
+        label.x = nextX;
+        label.y = nextY;
+        placed.push({ x: nextX, y: nextY, w, h });
+      }
+    }
+
+    for (const label of rawAggregatedLabels) {
+      aggregatedLabels.push({
+        key: label.key,
+        x: label.x,
+        y: label.y,
+        text: label.text,
+        edgeTypeClass: label.edgeTypeClass,
+        dirClass: label.dirClass
       });
     }
 
     return { suppressInlineLabels, aggregatedLabels };
-  }, [emphasizedEdgeItems, nodeMap, nodeSizes, orthogonalPorts]);
+  }, [emphasizedEdgeItems, edgeMode, nodeSizes, pivotNodeId]);
 
   const manhattanLineJumps = useMemo(() => {
     const jumps = new Map<string, LineJumpPoint[]>();
@@ -1063,66 +1316,6 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
     return jumps;
   }, [routingMode, emphasizedEdgeItems, nodeSizes, orthogonalPorts]);
 
-  const edgeLabelPositions = useMemo(() => {
-    const lineHeight = 13;
-    const placements: Array<{ key: string; x: number; y: number; w: number; h: number }> = [];
-    const byKey = new Map<string, { x: number; y: number }>();
-
-    const highlightedRects = Array.from(highlightedNodeIds)
-      .map((nodeId) => {
-        const node = nodeMap.get(nodeId);
-        if (!node) {
-          return null;
-        }
-        const measured = nodeSizes.get(nodeId);
-        return {
-          x: node.x,
-          y: node.y,
-          w: measured?.width ?? 190,
-          h: measured?.height ?? 48
-        };
-      })
-      .filter((rect): rect is { x: number; y: number; w: number; h: number } => rect !== null);
-
-    for (const item of emphasizedEdgeItems) {
-      if (!item.labelLines.length || item.faded) {
-        continue;
-      }
-      const { start, end } = getAnchoredEndpoints(item.source, item.target, nodeSizes, 0, 1, orthogonalPorts);
-      let baseX = (start.x + end.x) / 2;
-      let baseY = (start.y + end.y) / 2;
-      const longestLabel = item.labelLines.reduce((max, text) => Math.max(max, text.length), 0);
-      const w = Math.max(longestLabel * 6.3 + 18, 44);
-      const h = Math.max(18, item.labelLines.length * lineHeight + 8);
-
-      const step = 14;
-      let attempts = 0;
-      while (attempts < 18) {
-        const intersects = placements.some((p) => Math.abs(baseX - p.x) < (w + p.w) / 2 + 6 && Math.abs(baseY - p.y) < (h + p.h) / 2 + 4);
-        const overlapsHighlightedNode = highlightedRects.some(
-          (rect) =>
-            Math.abs(baseX - (rect.x + rect.w / 2)) < (w + rect.w) / 2 + 10 &&
-            Math.abs(baseY - (rect.y + rect.h / 2)) < (h + rect.h) / 2 + 10
-        );
-
-        if (!intersects && !overlapsHighlightedNode) {
-          break;
-        }
-        const dir = attempts % 2 === 0 ? 1 : -1;
-        const band = Math.floor(attempts / 2) + 1;
-        baseY += dir * band * step;
-        if (overlapsHighlightedNode) {
-          baseX += dir * 6;
-        }
-        attempts += 1;
-      }
-
-      placements.push({ key: item.key, x: baseX, y: baseY, w, h });
-      byKey.set(item.key, { x: baseX, y: baseY });
-    }
-
-    return byKey;
-  }, [emphasizedEdgeItems, nodeSizes, orthogonalPorts, highlightedNodeIds, nodeMap]);
 
   useEffect(() => {
     if (!svgRef.current) {
@@ -1724,11 +1917,11 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
     const ty = end.y;
     const defaultLabelX = (sx + tx) / 2;
     const defaultLabelY = (sy + ty) / 2;
-    const adjusted = edgeLabelPositions.get(item.key);
+    const adjusted = edgeLabelPositions.positions.get(item.key);
     const labelX = adjusted?.x ?? defaultLabelX;
     const labelY = adjusted?.y ?? defaultLabelY;
     const longestLabel = item.labelLines.reduce((max, text) => Math.max(max, text.length), 0);
-    const labelWidth = Math.max(longestLabel * 6.3 + 18, 44);
+    const labelWidth = Math.max(longestLabel * 6.3 + 26, 52);
     const lineHeight = 13;
     const labelHeight = Math.max(18, item.labelLines.length * lineHeight + 8);
     const labelTop = labelY - labelHeight / 2;
@@ -1805,7 +1998,7 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
             />
           </>
         )}
-        {showLabel && item.labelLines.length > 0 && !item.faded && !groupedLabelState.suppressInlineLabels.has(item.key) && (
+        {showLabel && edgeMode !== 'grouped' && item.labelLines.length > 0 && !item.faded && !groupedLabelState.suppressInlineLabels.has(item.key) && (
           <g className="edge-label-group">
             <rect
               x={labelX - labelWidth / 2}
@@ -1883,7 +2076,7 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
             <option value="octolinear">octolinear</option>
           </select>
         </label>
-        <button onClick={resetZoomView}>Reset zoom</button>
+         <button onClick={resetZoomView}>Reset zoom</button>
         <button onClick={() => setShowLegendPanel((v) => !v)}>{showLegendPanel ? 'Hide legend' : 'Show legend'}</button>
         <button onClick={() => setShowHelpPanel((v) => !v)}>{showHelpPanel ? 'Hide help' : 'Show help'}</button>
         <label>
@@ -2004,9 +2197,9 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
             {groupedLabelState.aggregatedLabels.map((label) => (
               <g className="edge-label-group" key={label.key}>
                 <rect
-                  x={label.x - Math.max(42, label.text.length * 3.2 + 9)}
+                  x={label.x - Math.max(46, label.text.length * 3.2 + 13)}
                   y={label.y - 10}
-                  width={Math.max(84, label.text.length * 6.4 + 18)}
+                  width={Math.max(92, label.text.length * 6.4 + 26)}
                   height={20}
                   rx="4"
                   ry="4"
@@ -2080,21 +2273,7 @@ function edgePath(
     return `M ${sx} ${sy} L ${tx} ${ty}`;
   }
 
-  if (mode === 'grouped') {
-    const sourceGroup = groupCenter.get(source.group);
-    const targetGroup = groupCenter.get(target.group);
-    if (sourceGroup && targetGroup) {
-      const c1x = sourceStubX + (sourceGroup.x - sourceStubX) * 0.62;
-      const c1y = sourceStubY + (sourceGroup.y - sourceStubY) * 0.62;
-      const c2x = targetStubX + (targetGroup.x - targetStubX) * 0.62;
-      const c2y = targetStubY + (targetGroup.y - targetStubY) * 0.62;
-      if (orthogonalPorts) {
-        return `M ${sx} ${sy} L ${sourceStubX} ${sourceStubY} C ${c1x} ${c1y}, ${c2x} ${c2y}, ${targetStubX} ${targetStubY} L ${tx} ${ty}`;
-      }
-      return `M ${sx} ${sy} C ${c1x} ${c1y}, ${c2x} ${c2y}, ${tx} ${ty}`;
-    }
-  }
-
+  // Both 'soft' and 'grouped' use the softbundle algorithm for smooth routing
   const dx = tx - sx;
   const dy = ty - sy;
   const distance = Math.hypot(dx, dy) || 1;
@@ -2115,6 +2294,7 @@ interface AnchorPoint {
   x: number;
   y: number;
   side: NodeSide;
+  portPosition?: 'begin' | 'middle' | 'end';  // discrete port positions on side
 }
 
 function getNodeRect(node: SimNode, nodeSizes: Map<string, { width: number; height: number }>) {
@@ -2166,68 +2346,142 @@ function anchorToRectBorder(
   };
 }
 
-function anchorNearestPorts(
-  sourceRect: { x: number; y: number; width: number; height: number },
-  targetRect: { x: number; y: number; width: number; height: number }
-) {
-  type SidePair = { source: NodeSide; target: NodeSide; distance: number };
-  const pairs: SidePair[] = [];
+function sectorToSide(angleDegrees: number, tiebreaker: number = 0): NodeSide {
+  // Normalize angle to 0-360 range
+  const angle = ((angleDegrees % 360) + 360) % 360;
   
-  // Calculate distance between each pair of sides.
-  for (const sourceSide of ['left', 'right', 'top', 'bottom'] as NodeSide[]) {
-    for (const targetSide of ['left', 'right', 'top', 'bottom'] as NodeSide[]) {
-      const sourceX = sourceSide === 'right' ? sourceRect.x + sourceRect.width : sourceRect.x;
-      const sourceY = sourceSide === 'bottom' ? sourceRect.y + sourceRect.height : sourceRect.y;
-      const targetX = targetSide === 'right' ? targetRect.x + targetRect.width : targetRect.x;
-      const targetY = targetSide === 'bottom' ? targetRect.y + targetRect.height : targetRect.y;
-      const dx = targetX - sourceX;
-      const dy = targetY - sourceY;
-      const distance = Math.hypot(dx, dy);
-      pairs.push({ source: sourceSide, target: targetSide, distance });
-    }
+  // Determine primary sector
+  // 0° = right, 90° = down, 180° = left, 270° = up (screen coordinates)
+  let side: NodeSide;
+  let hasFlipPair = false;
+  let flipPair: [NodeSide, NodeSide] = ['top', 'bottom'];
+  
+  if (angle >= 0 && angle < 45) side = 'right';      // Sector 1: 0° to 45° → right
+  else if (angle >= 45 && angle < 90) {
+    side = 'bottom';                                   // Sector 2: 45° to 90° (can flip to right)
+    hasFlipPair = true;
+    flipPair = ['bottom', 'right'];
+  } else if (angle >= 90 && angle < 135) {
+    side = 'bottom';                                   // Sector 3: 90° to 135° (can flip to left)
+    hasFlipPair = true;
+    flipPair = ['bottom', 'left'];
+  } else if (angle >= 135 && angle < 180) side = 'left';    // Sector 4: 135° to 180° → left
+  else if (angle >= 180 && angle < 225) side = 'left';      // Sector 5: 180° to 225° → left
+  else if (angle >= 225 && angle < 270) {
+    side = 'top';                                      // Sector 6: 225° to 270° (can flip to left)
+    hasFlipPair = true;
+    flipPair = ['top', 'left'];
+  } else if (angle >= 270 && angle < 315) {
+    side = 'top';                                      // Sector 7: 270° to 315° (can flip to right)
+    hasFlipPair = true;
+    flipPair = ['top', 'right'];
+  } else side = 'right';                              // Sector 8: 315° to 360° → right
+
+  // At boundary angles (45°, 135°, 225°, 315°), flip between paired sides deterministically
+  if (hasFlipPair && Math.abs(Math.round(angle * 10) - angle * 10) < 0.1) {
+    // Use tiebreaker hash (source node ID) to deterministically alternate
+    return tiebreaker % 2 === 0 ? flipPair[0] : flipPair[1];
   }
   
-  pairs.sort((a, b) => a.distance - b.distance);
-  const bestPair = pairs[0];
+  return side;
+}
+
+function anchorNearestPorts(
+  sourceRect: { x: number; y: number; width: number; height: number },
+  targetRect: { x: number; y: number; width: number; height: number },
+  sourceNodeId: string = '',
+  sourcePortPosition: 'begin' | 'middle' | 'end' = 'middle',
+  targetPortPosition: 'begin' | 'middle' | 'end' = 'middle'
+) {
+  // Get center points of both rectangles
+  const sourceCenter = getRectCenter(sourceRect);
+  const targetCenter = getRectCenter(targetRect);
+
+  // Calculate angle from source to target
+  const dx = targetCenter.x - sourceCenter.x;
+  const dy = targetCenter.y - sourceCenter.y;
+  const radians = Math.atan2(dy, dx);
+  const angleDegrees = (radians * 180) / Math.PI;
   
-  const sourceAnchor = createAnchorOnSide(sourceRect, bestPair.source);
-  const targetAnchor = createAnchorOnSide(targetRect, bestPair.target);
+  // Hash source node ID for deterministic tie-breaking
+  let tiebreaker = 0;
+  for (let i = 0; i < sourceNodeId.length; i++) {
+    tiebreaker = ((tiebreaker << 5) - tiebreaker) + sourceNodeId.charCodeAt(i);
+    tiebreaker |= 0; // Convert to 32bit integer
+  }
+  tiebreaker = Math.abs(tiebreaker);
   
+  // Get port sides based on angle (with tie-breaking at boundaries)
+  const sourceSide = sectorToSide(angleDegrees, tiebreaker);
+  const targetSide = sectorToSide(angleDegrees + 180, tiebreaker); // Opposite angle for target
+
+  const sourceAnchor = createAnchorOnSide(sourceRect, sourceSide, sourcePortPosition);
+  const targetAnchor = createAnchorOnSide(targetRect, targetSide, targetPortPosition);
+
   return { start: sourceAnchor, end: targetAnchor };
 }
 
 function createAnchorOnSide(
   rect: { x: number; y: number; width: number; height: number },
-  side: NodeSide
+  side: NodeSide,
+  portPosition: 'begin' | 'middle' | 'end' = 'middle'
 ): AnchorPoint {
   const center = getRectCenter(rect);
   const guard = 8;
   
+  // Position offset based on port position
+  const positionFactors: Record<'begin' | 'middle' | 'end', number> = {
+    'begin': 0.25,
+    'middle': 0.5,
+    'end': 0.75
+  };
+  const factor = positionFactors[portPosition];
+  
   if (side === 'left') {
     return {
       x: rect.x,
-      y: clamp(center.y, rect.y + guard, rect.y + rect.height - guard),
-      side: 'left'
+      y: clamp(
+        rect.y + guard + (rect.height - 2 * guard) * factor,
+        rect.y + guard,
+        rect.y + rect.height - guard
+      ),
+      side: 'left',
+      portPosition
     };
   }
   if (side === 'right') {
     return {
       x: rect.x + rect.width,
-      y: clamp(center.y, rect.y + guard, rect.y + rect.height - guard),
-      side: 'right'
+      y: clamp(
+        rect.y + guard + (rect.height - 2 * guard) * factor,
+        rect.y + guard,
+        rect.y + rect.height - guard
+      ),
+      side: 'right',
+      portPosition
     };
   }
   if (side === 'top') {
     return {
-      x: clamp(center.x, rect.x + guard, rect.x + rect.width - guard),
+      x: clamp(
+        rect.x + guard + (rect.width - 2 * guard) * factor,
+        rect.x + guard,
+        rect.x + rect.width - guard
+      ),
       y: rect.y,
-      side: 'top'
+      side: 'top',
+      portPosition
     };
   }
   return {
-    x: clamp(center.x, rect.x + guard, rect.x + rect.width - guard),
+    x: clamp(
+      rect.x + guard + (rect.width - 2 * guard) * factor,
+      rect.x + guard,
+      rect.x + rect.width - guard
+    ),
     y: rect.y + rect.height,
-    side: 'bottom'
+    side: 'bottom',
+    portPosition
   };
 }
 
@@ -2239,13 +2493,15 @@ function getAnchoredEndpoints(
   parallelTotal = 1,
   orthogonalPorts = false,
   sharedSourcePort: AnchorPoint | null = null,
-  sharedTargetPort: AnchorPoint | null = null
+  sharedTargetPort: AnchorPoint | null = null,
+  sourcePortPosition: 'begin' | 'middle' | 'end' = 'middle',
+  targetPortPosition: 'begin' | 'middle' | 'end' = 'middle'
 ) {
   const sourceRect = getNodeRect(source, nodeSizes);
   const targetRect = getNodeRect(target, nodeSizes);
   const base = orthogonalPorts
-    ? anchorOrthogonalPorts(sourceRect, targetRect)
-    : anchorNearestPorts(sourceRect, targetRect);
+    ? anchorOrthogonalPorts(sourceRect, targetRect, sourcePortPosition, targetPortPosition)
+    : anchorNearestPorts(sourceRect, targetRect, source.id, sourcePortPosition, targetPortPosition);
   if (sharedSourcePort) {
     base.start = sharedSourcePort;
   }
@@ -2300,48 +2556,29 @@ function inferAnchorSide(
 
 function anchorOrthogonalPorts(
   sourceRect: { x: number; y: number; width: number; height: number },
-  targetRect: { x: number; y: number; width: number; height: number }
+  targetRect: { x: number; y: number; width: number; height: number },
+  sourcePortPosition: 'begin' | 'middle' | 'end' = 'middle',
+  targetPortPosition: 'begin' | 'middle' | 'end' = 'middle'
 ) {
   const sourceCenter = getRectCenter(sourceRect);
   const targetCenter = getRectCenter(targetRect);
   const dx = targetCenter.x - sourceCenter.x;
   const dy = targetCenter.y - sourceCenter.y;
-  const guard = 8;
 
   if (Math.abs(dx) >= Math.abs(dy)) {
     const sourceSide: NodeSide = dx >= 0 ? 'right' : 'left';
     const targetSide: NodeSide = dx >= 0 ? 'left' : 'right';
-    const sourceY = clamp(targetCenter.y, sourceRect.y + guard, sourceRect.y + sourceRect.height - guard);
-    const targetY = clamp(sourceCenter.y, targetRect.y + guard, targetRect.y + targetRect.height - guard);
     return {
-      start: {
-        x: sourceSide === 'right' ? sourceRect.x + sourceRect.width : sourceRect.x,
-        y: sourceY,
-        side: sourceSide
-      },
-      end: {
-        x: targetSide === 'right' ? targetRect.x + targetRect.width : targetRect.x,
-        y: targetY,
-        side: targetSide
-      }
+      start: createAnchorOnSide(sourceRect, sourceSide, sourcePortPosition),
+      end: createAnchorOnSide(targetRect, targetSide, targetPortPosition)
     };
   }
 
   const sourceSide: NodeSide = dy >= 0 ? 'bottom' : 'top';
   const targetSide: NodeSide = dy >= 0 ? 'top' : 'bottom';
-  const sourceX = clamp(targetCenter.x, sourceRect.x + guard, sourceRect.x + sourceRect.width - guard);
-  const targetX = clamp(sourceCenter.x, targetRect.x + guard, targetRect.x + targetRect.width - guard);
   return {
-    start: {
-      x: sourceX,
-      y: sourceSide === 'bottom' ? sourceRect.y + sourceRect.height : sourceRect.y,
-      side: sourceSide
-    },
-    end: {
-      x: targetX,
-      y: targetSide === 'bottom' ? targetRect.y + targetRect.height : targetRect.y,
-      side: targetSide
-    }
+    start: createAnchorOnSide(sourceRect, sourceSide, sourcePortPosition),
+    end: createAnchorOnSide(targetRect, targetSide, targetPortPosition)
   };
 }
 
@@ -2582,12 +2819,69 @@ function octolinearRoutePoints(
     }
   }
 
-  if (!Number.isFinite(bestScore)) {
-    return manhattanRoutePoints(source, target, nodeSizes, orthogonalPorts, parallelIndex, parallelTotal, sharedSourcePort, sharedTargetPort);
-  }
+   if (!Number.isFinite(bestScore)) {
+     return manhattanRoutePoints(source, target, nodeSizes, orthogonalPorts, parallelIndex, parallelTotal, sharedSourcePort, sharedTargetPort);
+   }
 
-  setOctolinearCache(cacheKey, best);
-  return best;
+   // Ensure best candidate is properly aligned to octolinear directions
+   const normalizedBest = normalizeOctolinearRoute(best);
+   setOctolinearCache(cacheKey, normalizedBest);
+   return normalizedBest;
+}
+
+function normalizeOctolinearRoute(
+  points: Array<{ x: number; y: number }>
+): Array<{ x: number; y: number }> {
+  if (points.length < 2) return points;
+  
+  const result: Array<{ x: number; y: number }> = [points[0]];
+  
+  for (let i = 1; i < points.length; i++) {
+    const prev = result[result.length - 1];
+    const curr = points[i];
+    const dx = curr.x - prev.x;
+    const dy = curr.y - prev.y;
+    
+    if (Math.abs(dx) < 1e-6 && Math.abs(dy) < 1e-6) {
+      // Skip zero-length segment
+      continue;
+    }
+    
+    const absDx = Math.abs(dx);
+    const absDy = Math.abs(dy);
+    
+    // Check if already aligned to octolinear (one of 8 directions)
+    const isHorizontal = Math.abs(dy) < 1e-6;
+    const isVertical = Math.abs(dx) < 1e-6;
+    const isDiagonal45 = Math.abs(absDx - absDy) < 1e-6;
+    
+    if (isHorizontal || isVertical || isDiagonal45) {
+      // Already aligned
+      result.push(curr);
+    } else {
+      // Not aligned - decompose into octolinear segments
+      // Try to match the target as closely as possible using 45° angles
+      const sx = Math.sign(dx) || 1;
+      const sy = Math.sign(dy) || 1;
+      const diagDist = Math.min(absDx, absDy);
+      
+      // Add diagonal segment
+      result.push({
+        x: prev.x + sx * diagDist,
+        y: prev.y + sy * diagDist
+      });
+      
+      // Add remaining horizontal or vertical segment if needed
+      const remX = curr.x - result[result.length - 1].x;
+      const remY = curr.y - result[result.length - 1].y;
+      
+      if (Math.abs(remX) > 1e-6 || Math.abs(remY) > 1e-6) {
+        result.push(curr);
+      }
+    }
+  }
+  
+  return result;
 }
 
 function buildOctolinearCoreCandidates(
@@ -2617,13 +2911,15 @@ function buildOctolinearCoreCandidates(
     const hx = start.x + sx * halfH + off;
     const h1 = { x: hx, y: start.y };
     const h2 = { x: hx + sx * diag, y: start.y + sy * diag };
-    candidates.push([start, h1, h2, end]);
+    const hCandidate = normalizeOctolinearRoute([start, h1, h2, end]);
+    candidates.push(hCandidate);
 
     // Vertical stub -> diagonal -> vertical stub
     const vy = start.y + sy * halfV + off;
     const v1 = { x: start.x, y: vy };
     const v2 = { x: start.x + sx * diag, y: vy + sy * diag };
-    candidates.push([start, v1, v2, end]);
+    const vCandidate = normalizeOctolinearRoute([start, v1, v2, end]);
+    candidates.push(vCandidate);
   }
 
   return candidates;

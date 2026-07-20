@@ -11,6 +11,7 @@ interface LayoutResult {
 interface ForceLayoutOptions {
   isLocalContext?: boolean;
   localRootNodeId?: string | null;
+  simulationEnabled?: boolean;  // false = freeze after initial layout
 }
 
 export function useForceLayout(
@@ -112,6 +113,7 @@ export function useForceLayout(
     const shouldPreferWebGpu = layoutEngine === 'webgpu' || (layoutEngine === 'auto' && size >= 320);
     let frame = 0;
     let disposed = false;
+    let hasSimulatedOnce = false;  // Track if we've done initial layout
     let runningSimulation: { stop: () => void } | null = null;
     const lastGoodPosition = new Map<string, { x: number; y: number }>();
     for (const node of seededNodes) {
@@ -158,7 +160,17 @@ export function useForceLayout(
         }
         publishLayout();
       });
-      simulation.on('end', publishLayout);
+      // After first simulation ends, freeze if simulationEnabled is false
+      simulation.on('end', () => {
+        publishLayout();
+        if (!hasSimulatedOnce) {
+          hasSimulatedOnce = true;
+          // Auto-freeze after initial layout if disabled
+          if (options.simulationEnabled === false) {
+            runningSimulation?.stop();
+          }
+        }
+      });
     };
 
     const buildCpuSimulation = () => {
