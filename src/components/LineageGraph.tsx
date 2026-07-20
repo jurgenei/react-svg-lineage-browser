@@ -1413,6 +1413,7 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
     select(svgRef.current)
       .transition()
       .duration(500)
+      .ease(easeCubicOut)
       .call(zoomBehaviorRef.current.transform as never, targetTransform);
 
     hasInitialFitRef.current = true;
@@ -2165,6 +2166,71 @@ function anchorToRectBorder(
   };
 }
 
+function anchorNearestPorts(
+  sourceRect: { x: number; y: number; width: number; height: number },
+  targetRect: { x: number; y: number; width: number; height: number }
+) {
+  type SidePair = { source: NodeSide; target: NodeSide; distance: number };
+  const pairs: SidePair[] = [];
+  
+  // Calculate distance between each pair of sides.
+  for (const sourceSide of ['left', 'right', 'top', 'bottom'] as NodeSide[]) {
+    for (const targetSide of ['left', 'right', 'top', 'bottom'] as NodeSide[]) {
+      const sourceX = sourceSide === 'right' ? sourceRect.x + sourceRect.width : sourceRect.x;
+      const sourceY = sourceSide === 'bottom' ? sourceRect.y + sourceRect.height : sourceRect.y;
+      const targetX = targetSide === 'right' ? targetRect.x + targetRect.width : targetRect.x;
+      const targetY = targetSide === 'bottom' ? targetRect.y + targetRect.height : targetRect.y;
+      const dx = targetX - sourceX;
+      const dy = targetY - sourceY;
+      const distance = Math.hypot(dx, dy);
+      pairs.push({ source: sourceSide, target: targetSide, distance });
+    }
+  }
+  
+  pairs.sort((a, b) => a.distance - b.distance);
+  const bestPair = pairs[0];
+  
+  const sourceAnchor = createAnchorOnSide(sourceRect, bestPair.source);
+  const targetAnchor = createAnchorOnSide(targetRect, bestPair.target);
+  
+  return { start: sourceAnchor, end: targetAnchor };
+}
+
+function createAnchorOnSide(
+  rect: { x: number; y: number; width: number; height: number },
+  side: NodeSide
+): AnchorPoint {
+  const center = getRectCenter(rect);
+  const guard = 8;
+  
+  if (side === 'left') {
+    return {
+      x: rect.x,
+      y: clamp(center.y, rect.y + guard, rect.y + rect.height - guard),
+      side: 'left'
+    };
+  }
+  if (side === 'right') {
+    return {
+      x: rect.x + rect.width,
+      y: clamp(center.y, rect.y + guard, rect.y + rect.height - guard),
+      side: 'right'
+    };
+  }
+  if (side === 'top') {
+    return {
+      x: clamp(center.x, rect.x + guard, rect.x + rect.width - guard),
+      y: rect.y,
+      side: 'top'
+    };
+  }
+  return {
+    x: clamp(center.x, rect.x + guard, rect.x + rect.width - guard),
+    y: rect.y + rect.height,
+    side: 'bottom'
+  };
+}
+
 function getAnchoredEndpoints(
   source: SimNode,
   target: SimNode,
@@ -2177,14 +2243,9 @@ function getAnchoredEndpoints(
 ) {
   const sourceRect = getNodeRect(source, nodeSizes);
   const targetRect = getNodeRect(target, nodeSizes);
-  const sourceCenter = getRectCenter(sourceRect);
-  const targetCenter = getRectCenter(targetRect);
   const base = orthogonalPorts
     ? anchorOrthogonalPorts(sourceRect, targetRect)
-    : {
-        start: anchorToRectBorder(sourceRect, targetCenter),
-        end: anchorToRectBorder(targetRect, sourceCenter)
-      };
+    : anchorNearestPorts(sourceRect, targetRect);
   if (sharedSourcePort) {
     base.start = sharedSourcePort;
   }
