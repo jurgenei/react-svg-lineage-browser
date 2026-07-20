@@ -40,6 +40,12 @@ interface EdgeRenderItem {
   parallelTotal: number;
   sharedSourcePort: AnchorPoint | null;
   sharedTargetPort: AnchorPoint | null;
+  // New bundling fields
+  directionality: 'incoming' | 'outgoing' | 'both' | 'none';  // relative to pivot/selected node
+  bundleColor: 'orange' | 'blue' | 'purple' | 'default';    // based on directionality
+  sharedEdges?: SimLink[];                                     // edges in the shared bundle portion
+  divergingEdges?: SimLink[];                                 // edges that diverge from shared bundle
+  labelGroupKey?: string;                                     // for grouping same-label edges
 }
 
 interface LineJumpPoint {
@@ -161,13 +167,14 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
   const nodeElementsRef = useRef<Map<string, HTMLButtonElement>>(new Map());
   const nodeObserversRef = useRef<Map<string, ResizeObserver>>(new Map());
   const nodeRefCallbacksRef = useRef<Map<string, (element: HTMLButtonElement | null) => void>>(new Map());
-  const preLocalTransformRef = useRef<ZoomTransform | null>(null);
-  const pendingFocusDurationRef = useRef(280);
-  const pendingFocusScaleRef = useRef<number | null>(null);
-  const dragStartClientRef = useRef<{ x: number; y: number } | null>(null);
-  const dragMovedRef = useRef(false);
-  const suppressNextNodeClickRef = useRef(false);
-  const [dragPanelState, setDragPanelState] = useState<DragPanelState | null>(null);
+   const preLocalTransformRef = useRef<ZoomTransform | null>(null);
+   const pendingFocusDurationRef = useRef(280);
+   const pendingFocusScaleRef = useRef<number | null>(null);
+   const dragStartClientRef = useRef<{ x: number; y: number } | null>(null);
+   const dragMovedRef = useRef(false);
+   const suppressNextNodeClickRef = useRef(false);
+   const [dragPanelState, setDragPanelState] = useState<DragPanelState | null>(null);
+   const preLocalNodePositionsRef = useRef<Map<string, { x: number; y: number }> | null>(null);
 
   const registerNodeElement = useCallback((nodeId: string, element: HTMLButtonElement | null) => {
     const currentElement = nodeElementsRef.current.get(nodeId);
@@ -572,7 +579,9 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
           parallelIndex: 0,
           parallelTotal: 1,
           sharedSourcePort: null,
-          sharedTargetPort: null
+          sharedTargetPort: null,
+          directionality: 'both',
+          bundleColor: 'purple'
         });
         continue;
       }
@@ -609,6 +618,10 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
       const typeSet = new Set(bundle.map((link) => link.type.toLowerCase()));
       const edgeTypeClass = typeSet.size === 1 ? `edge-${bundle[0].type.toLowerCase()}` : 'edge-flow';
 
+      // Classify edge directionality and assign bundle color
+      const directionality = classifyEdgeDirectionality(sourceId, targetId, pivotNodeId);
+      const bundleColor = getBundleColor(directionality);
+
       items.push({
         key: `${source.id}:${target.id}`,
         edgeKey: bundle[0].edgeKey ?? `${source.id}|${target.id}`,
@@ -627,7 +640,9 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
         parallelIndex: 0,
         parallelTotal: 1,
         sharedSourcePort: null,
-        sharedTargetPort: null
+        sharedTargetPort: null,
+        directionality,
+        bundleColor
       });
     }
 
@@ -1484,35 +1499,50 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
      select(svgRef.current).call(zoomBehaviorRef.current.transform as never, targetTransform);
    }
 
-  const enterLocalContext = useCallback((nodeId: string) => {
-    if (!isLocalContext) {
-      preLocalTransformRef.current = transform;
-    }
-    setIsLocalContext(true);
-    setLocalRootNodeId(nodeId);
-    setSelectedNodeId(nodeId);
-    setHoveredNodeId(null);
-    pendingFocusDurationRef.current = 280;
-    setPendingFocusId(nodeId);
-  }, [isLocalContext, transform]);
+   const enterLocalContext = useCallback((nodeId: string) => {
+     if (!isLocalContext) {
+       preLocalTransformRef.current = transform;
+       // Capture current node positions as exit targets
+       const positions = new Map<string, { x: number; y: number }>();
+       for (const node of nodesWithManualPositions) {
+         positions.set(node.id, { x: node.x, y: node.y });
+       }
+       preLocalNodePositionsRef.current = positions;
+     }
+     setIsLocalContext(true);
+     setLocalRootNodeId(nodeId);
+     setSelectedNodeId(nodeId);
+     setHoveredNodeId(null);
+     pendingFocusDurationRef.current = 280;
+     setPendingFocusId(nodeId);
+   }, [isLocalContext, transform, nodesWithManualPositions]);
 
-  const exitLocalContext = useCallback(() => {
-    if (!isLocalContext) {
-      return;
-    }
-    const exitingRootNodeId = localRootNodeId;
-    const restoreTransform = preLocalTransformRef.current;
-    setIsLocalContext(false);
-    setLocalRootNodeId(null);
-    setSelectedNodeId(null);
-    setHoveredNodeId(null);
-    preLocalTransformRef.current = null;
-    if (exitingRootNodeId) {
-      pendingFocusDurationRef.current = 340;
-      pendingFocusScaleRef.current = restoreTransform?.k ?? transform.k;
-      setPendingFocusId(exitingRootNodeId);
-    }
-  }, [isLocalContext, localRootNodeId, transform.k]);
+   const exitLocalContext = useCallback(() => {
+     if (!isLocalContext) {
+       return;
+     }
+     const exitingRootNodeId = localRootNodeId;
+     const restoreTransform = preLocalTransformRef.current;
+     const savedPositions = preLocalNodePositionsRef.current;
+
+     // Restore node positions: apply them as manual positions for animation back
+     if (savedPositions && savedPositions.size > 0) {
+       setManualPositions(new Map(savedPositions));
+     }
+
+     setIsLocalContext(false);
+     setLocalRootNodeId(null);
+     setSelectedNodeId(null);
+     setHoveredNodeId(null);
+     preLocalTransformRef.current = null;
+     preLocalNodePositionsRef.current = null;
+
+     if (exitingRootNodeId) {
+       pendingFocusDurationRef.current = 340;
+       pendingFocusScaleRef.current = restoreTransform?.k ?? transform.k;
+       setPendingFocusId(exitingRootNodeId);
+     }
+   }, [isLocalContext, localRootNodeId, transform.k]);
 
   function resetZoomView() {
     if (!svgRef.current || !zoomBehaviorRef.current) {
@@ -3007,3 +3037,43 @@ function arrangeComponentsBySize(nodes: SimNode[], links: SimLink[], width: numb
   });
 }
 
+function classifyEdgeDirectionality(
+  sourceId: string,
+  targetId: string,
+  pivotNodeId: string | null
+): 'incoming' | 'outgoing' | 'both' | 'none' {
+  if (!pivotNodeId) {
+    return 'none';
+  }
+  const isSourcePivot = sourceId === pivotNodeId;
+  const isTargetPivot = targetId === pivotNodeId;
+
+  if (isSourcePivot && isTargetPivot) {
+    return 'both';  // self-loop
+  }
+  if (isSourcePivot) {
+    return 'outgoing';  // edge leaves from pivot
+  }
+  if (isTargetPivot) {
+    return 'incoming';  // edge enters to pivot
+  }
+  return 'none';
+}
+
+function getBundleColor(directionality: 'incoming' | 'outgoing' | 'both' | 'none'): 'orange' | 'blue' | 'purple' | 'default' {
+  switch (directionality) {
+    case 'incoming':
+      return 'orange';
+    case 'outgoing':
+      return 'blue';
+    case 'both':
+      return 'purple';
+    default:
+      return 'default';
+  }
+}
+
+function assignBundleThickness(edges: SimLink[], baseStrokeWidth: number, count: number): number {
+  // If this edge is part of a shared bundle, thickness accumulates
+  return Math.min(14, baseStrokeWidth * Math.min(2, 1 + count * 0.3));
+}
