@@ -39,6 +39,11 @@ export function useForceLayout(
     const topY = 48;
     const bottomY = Math.max(topY + 120, height - 48);
 
+    // Compute compact X mapping for local context
+    const localXMapping = isLocalContext && localRootNodeId
+      ? computeLocalXMapping(localRoleMap, localRootNodeId, width)
+      : null;
+
       for (const node of clone) {
       const nodeDepth = depth.get(node.id) ?? -1;
       node.depth = nodeDepth;
@@ -46,15 +51,8 @@ export function useForceLayout(
 
         const localRole = localRoleMap.get(node.id) ?? 'other';
         if (isLocalContext && localRootNodeId) {
-          if (node.id === localRootNodeId) {
-            node.x = width * 0.5;
-          } else if (localRole === 'in') {
-            node.x = width * 0.27;
-          } else if (localRole === 'out') {
-            node.x = width * 0.73;
-          } else {
-            node.x = width * 0.5;
-          }
+          // Use compacted X mapping based on which roles actually exist
+          node.x = localXMapping ? localXMapping(node.id, localRole) : width * 0.5;
           node.fx = null;
           const categoryYNorm = getCategoryYPosition(node.dominant_category);
           const categoryY = topY + categoryYNorm * (bottomY - topY);
@@ -199,13 +197,9 @@ export function useForceLayout(
                 return width * 0.5;
               }
               const role = localRoleMap.get(node.id) ?? 'other';
-              if (role === 'in') {
-                return width * 0.27;
-              }
-              if (role === 'out') {
-                return width * 0.73;
-              }
-              return width * 0.5;
+              // Use compacted X mapping
+              const mapping = computeLocalXMapping(localRoleMap, localRootNodeId, width);
+              return getLocalXTarget(role, width, mapping);
             }
             const xppr = parseXppr(node.xppr);
             if (xppr !== null) {
@@ -312,13 +306,9 @@ export function useForceLayout(
                   return width * 0.5;
                 }
                 const role = localRoleMap.get(node.id) ?? 'other';
-                if (role === 'in') {
-                  return width * 0.27;
-                }
-                if (role === 'out') {
-                  return width * 0.73;
-                }
-                return width * 0.5;
+                // Use compacted X mapping
+                const mapping = computeLocalXMapping(localRoleMap, localRootNodeId, width);
+                return getLocalXTarget(role, width, mapping);
               }
               const xppr = parseXppr(node.xppr);
               if (xppr !== null) {
@@ -550,3 +540,62 @@ function computeLocalRoleMap(links: SimLink[], localRootNodeId: string | null) {
 
   return roles;
 }
+
+function computeLocalXMapping(
+  localRoleMap: Map<string, 'in' | 'out' | 'both' | 'other'>,
+  localRootNodeId: string,
+  width: number
+): (nodeId: string, role: 'in' | 'out' | 'both' | 'other') => number {
+  // Detect which role groups actually exist in the local subgraph
+  const hasIncoming = Array.from(localRoleMap.values()).some((role) => role === 'in' || role === 'both');
+  const hasOutgoing = Array.from(localRoleMap.values()).some((role) => role === 'out' || role === 'both');
+
+  // Assign X targets based on which ranks are occupied
+  const rankCount = (hasIncoming ? 1 : 0) + 1 + (hasOutgoing ? 1 : 0);  // incoming, center, outgoing
+  const padding = Math.max(40, width * 0.08);  // Minimum padding on sides
+  const availableWidth = width - padding * 2;
+  const rankWidth = availableWidth / Math.max(1, rankCount - 1 || 1);
+
+  return (nodeId: string, role: 'in' | 'out' | 'both' | 'other'): number => {
+    if (nodeId === localRootNodeId) {
+      // Root always centered
+      return width * 0.5;
+    }
+
+    let xPos = width * 0.5;
+    if (role === 'in' || role === 'both') {
+      if (hasOutgoing) {
+        // Incoming is at left third
+        xPos = padding + rankWidth * 0;
+      } else {
+        // Only incoming: put at left-center
+        xPos = padding + availableWidth * 0.33;
+      }
+    } else if (role === 'out') {
+      if (hasIncoming) {
+        // Outgoing is at right third
+        xPos = width - padding - rankWidth * 0;
+      } else {
+        // Only outgoing: put at right-center
+        xPos = width - padding - availableWidth * 0.33;
+      }
+    } else {
+      // Ambiguous/other: stay centered
+      xPos = width * 0.5;
+    }
+    return xPos;
+  };
+}
+
+function getLocalXTarget(
+  role: 'in' | 'out' | 'both' | 'other',
+  width: number,
+  mapping: ((nodeId: string, role: 'in' | 'out' | 'both' | 'other') => number) | null
+): number {
+  if (!mapping) {
+    return width * 0.5;
+  }
+  // Use a dummy nodeId since role is what matters for the target
+  return mapping('', role);
+}
+
