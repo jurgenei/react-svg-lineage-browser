@@ -9,9 +9,9 @@ import {
   type ZoomBehavior,
   type ZoomTransform
 } from 'd3';
-import type { GraphData, LayoutEngine, SimLink, SimNode } from '../types/graph';
+import type { DetailLayoutMode, GraphData, LayoutEngine, SimLink, SimNode } from '../types/graph';
 import { useForceLayout } from '../hooks/useForceLayout';
-import { buildVisibleGraph, collectNeighborhood } from '../utils/graph';
+import { buildLocalSugiyamaLayout, buildVisibleGraph, collectNeighborhood } from '../utils/graph';
 import { getCategoryColor } from '../utils/categoryConfig';
 
 interface LineageGraphProps {
@@ -67,6 +67,7 @@ interface GraphUiPrefs {
   cameraTransform: { x: number; y: number; k: number };
   selectedNodeId: string | null;
   toolbarPosition: 'top' | 'bottom' | 'left' | 'right';
+  detailLayoutMode: DetailLayoutMode;
 }
 
 type PanelName = 'help' | 'legend';
@@ -156,6 +157,9 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
    const [draggingNodeId, setDraggingNodeId] = useState<string | null>(null);
    const [nodeSizes, setNodeSizes] = useState<Map<string, { width: number; height: number }>>(new Map());
    const [toolbarPosition, setToolbarPosition] = useState<'top' | 'bottom' | 'left' | 'right'>(initialPrefs.toolbarPosition ?? 'top');
+    const [detailLayoutMode, setDetailLayoutMode] = useState<DetailLayoutMode>(
+      initialPrefs.detailLayoutMode === 'sugiyama' ? 'sugiyama' : 'force'
+    );
 
   const svgRef = useRef<SVGSVGElement | null>(null);
   const scrollViewportRef = useRef<HTMLDivElement | null>(null);
@@ -175,6 +179,7 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
    const suppressNextNodeClickRef = useRef(false);
    const [dragPanelState, setDragPanelState] = useState<DragPanelState | null>(null);
    const preLocalNodePositionsRef = useRef<Map<string, { x: number; y: number }> | null>(null);
+    const lastSugiyamaCenteredPivotRef = useRef<string | null>(null);
 
   const registerNodeElement = useCallback((nodeId: string, element: HTMLButtonElement | null) => {
     const currentElement = nodeElementsRef.current.get(nodeId);
@@ -285,17 +290,50 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
     return visibleGraph.nodes.find((node) => node.id === localRootNodeId)?.label ?? localRootNodeId;
   }, [visibleGraph.nodes, localRootNodeId]);
 
-   const nodesWithStacks = useMemo(() => arrangeComponentsBySize(nodes, links, width, height), [nodes, links, width, height]);
+  // Adjust canvas dimensions when toolbar is on left/right.
+  const toolbarWidth = toolbarPosition === 'left' || toolbarPosition === 'right' ? 280 : 0;
+  const canvasWidth = Math.max(400, width - toolbarWidth);
+  const canvasHeight = height;
 
-  const nodesWithManualPositions = useMemo(() => {
-    if (manualPositions.size === 0) {
+   const nodesWithStacks = useMemo(() => arrangeComponentsBySize(nodes, links, canvasWidth, canvasHeight), [nodes, links, canvasWidth, canvasHeight]);
+
+  const sugiyamaPivotNodeId = useMemo(() => {
+    if (!isLocalContext || detailLayoutMode !== 'sugiyama') {
+      return null;
+    }
+    if (selectedNodeId && activeGraph.nodes.some((node) => node.id === selectedNodeId)) {
+      return selectedNodeId;
+    }
+    if (localRootNodeId && activeGraph.nodes.some((node) => node.id === localRootNodeId)) {
+      return localRootNodeId;
+    }
+    return null;
+  }, [isLocalContext, detailLayoutMode, selectedNodeId, localRootNodeId, activeGraph.nodes]);
+
+  const useSugiyamaLocalLayout = Boolean(sugiyamaPivotNodeId);
+  const nodesWithDetailLayout = useMemo(() => {
+    if (!useSugiyamaLocalLayout || !sugiyamaPivotNodeId) {
       return nodesWithStacks;
     }
+    const sugiyamaPositions = buildLocalSugiyamaLayout(nodesWithStacks, links, sugiyamaPivotNodeId, canvasWidth, canvasHeight, {
+      maxRowsPerColumn: 8,
+    });
     return nodesWithStacks.map((node) => {
+      const position = sugiyamaPositions.get(node.id);
+      return position ? { ...node, x: position.x, y: position.y } : node;
+    });
+  }, [useSugiyamaLocalLayout, sugiyamaPivotNodeId, nodesWithStacks, links, width, height]);
+
+  const nodesWithManualPositions = useMemo(() => {
+    // Sugiyama mode is deterministic; do not apply stale drag positions from other modes.
+    if (useSugiyamaLocalLayout || manualPositions.size === 0) {
+      return nodesWithDetailLayout;
+    }
+    return nodesWithDetailLayout.map((node) => {
       const fixed = manualPositions.get(node.id);
       return fixed ? { ...node, x: fixed.x, y: fixed.y } : node;
     });
-  }, [nodesWithStacks, manualPositions]);
+  }, [nodesWithDetailLayout, manualPositions, useSugiyamaLocalLayout]);
 
   const nodeMap = useMemo(() => {
     const map = new Map<string, SimNode>();
@@ -304,11 +342,6 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
     }
     return map;
   }, [nodesWithManualPositions]);
-
-  // Adjust canvas dimensions when toolbar is on left/right.
-  const toolbarWidth = toolbarPosition === 'left' || toolbarPosition === 'right' ? 280 : 0;
-  const canvasWidth = Math.max(400, width - toolbarWidth);
-  const canvasHeight = height;
 
   const groupCenter = useMemo(() => {
     const accum = new Map<string, { x: number; y: number; count: number }>();
@@ -330,15 +363,15 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
     const padding = 180;
     const minX = (-transform.x / transform.k) - padding;
     const minY = (-transform.y / transform.k) - padding;
-    const maxX = ((width - transform.x) / transform.k) + padding;
-    const maxY = ((height - transform.y) / transform.k) + padding;
+    const maxX = ((canvasWidth - transform.x) / transform.k) + padding;
+    const maxY = ((canvasHeight - transform.y) / transform.k) + padding;
     return { minX, minY, maxX, maxY };
-  }, [transform, width, height]);
+  }, [transform, canvasWidth, canvasHeight]);
 
   const scrollWorldBounds = useMemo(() => {
     if (!nodesWithManualPositions.length) {
-      const halfW = width / Math.max(transform.k, 0.001) / 2;
-      const halfH = height / Math.max(transform.k, 0.001) / 2;
+      const halfW = canvasWidth / Math.max(transform.k, 0.001) / 2;
+      const halfH = canvasHeight / Math.max(transform.k, 0.001) / 2;
       return { minX: -halfW, minY: -halfH, maxX: halfW, maxY: halfH };
     }
 
@@ -362,8 +395,8 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
     maxX += margin;
     maxY += margin;
 
-    const minWorldWidth = width / Math.max(transform.k, 0.001);
-    const minWorldHeight = height / Math.max(transform.k, 0.001);
+    const minWorldWidth = canvasWidth / Math.max(transform.k, 0.001);
+    const minWorldHeight = canvasHeight / Math.max(transform.k, 0.001);
     const worldWidth = Math.max(1, maxX - minX);
     const worldHeight = Math.max(1, maxY - minY);
     if (worldWidth < minWorldWidth) {
@@ -378,7 +411,7 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
     }
 
     return { minX, minY, maxX, maxY };
-  }, [nodesWithManualPositions, nodeSizes, width, height, transform.k]);
+  }, [nodesWithManualPositions, nodeSizes, canvasWidth, canvasHeight, transform.k]);
 
   const scrollContentSize = useMemo(() => {
     const worldWidth = Math.max(1, scrollWorldBounds.maxX - scrollWorldBounds.minX);
@@ -1385,14 +1418,15 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
         legendPanelPos,
         cameraTransform: { x: transform.x, y: transform.y, k: transform.k },
         selectedNodeId,
-        toolbarPosition
+        toolbarPosition,
+        detailLayoutMode
       };
       try {
         window.localStorage.setItem(GRAPH_UI_PREFS_KEY, JSON.stringify(prefs));
       } catch {
         // Ignore storage quota/privacy mode errors and keep UI responsive.
       }
-    }, [focusDimStrength, autoZoomEnabled, showDirectEdges, orthogonalPorts, routingMode, edgeMode, showHelpPanel, showLegendPanel, helpPanelPos, legendPanelPos, transform, selectedNodeId, toolbarPosition]);
+    }, [focusDimStrength, autoZoomEnabled, showDirectEdges, orthogonalPorts, routingMode, edgeMode, showHelpPanel, showLegendPanel, helpPanelPos, legendPanelPos, transform, selectedNodeId, toolbarPosition, detailLayoutMode]);
 
   useEffect(() => {
     if (!dragPanelState) {
@@ -1552,6 +1586,22 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
     setPendingFocusId(null);
   }, [pendingFocusId, nodeMap, transform.k]);
 
+  useEffect(() => {
+    if (!useSugiyamaLocalLayout || !sugiyamaPivotNodeId) {
+      lastSugiyamaCenteredPivotRef.current = null;
+      return;
+    }
+    if (lastSugiyamaCenteredPivotRef.current === sugiyamaPivotNodeId) {
+      return;
+    }
+    const pivotNode = nodeMap.get(sugiyamaPivotNodeId);
+    if (!pivotNode) {
+      return;
+    }
+    lastSugiyamaCenteredPivotRef.current = sugiyamaPivotNodeId;
+    panToNode(pivotNode, transform.k, 220);
+  }, [useSugiyamaLocalLayout, sugiyamaPivotNodeId, nodeMap, transform.k]);
+
   // Auto-fit viewport on first load or data change
   const hasInitialFitRef = useRef(!isIdentityTransform(transform));
   const lastNodeCountRef = useRef(0);
@@ -1669,8 +1719,8 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
      }
      const nodeX = node.x + 85;
      const nodeY = node.y + 24;
-     const tx = width / 2 - (nodeX * zoomScale);
-     const ty = height / 2 - (nodeY * zoomScale);
+      const tx = canvasWidth / 2 - (nodeX * zoomScale);
+      const ty = canvasHeight / 2 - (nodeY * zoomScale);
      const targetTransform = zoomIdentity.translate(tx, ty).scale(zoomScale);
 
      select(svgRef.current)
@@ -1686,8 +1736,8 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
      }
      const nodeX = node.x + 85;
      const nodeY = node.y + 24;
-     const tx = width / 2 - (nodeX * zoomScale);
-     const ty = height / 2 - (nodeY * zoomScale);
+      const tx = canvasWidth / 2 - (nodeX * zoomScale);
+      const ty = canvasHeight / 2 - (nodeY * zoomScale);
      const targetTransform = zoomIdentity.translate(tx, ty).scale(zoomScale);
      // Immediate jump without animation
      select(svgRef.current).call(zoomBehaviorRef.current.transform as never, targetTransform);
@@ -1835,7 +1885,7 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
           opacity: faded ? dimmedNodeOpacity : undefined
         }}
         onPointerDown={(event) => {
-          if (node.type !== 'table' || !stageRef.current) {
+          if (node.type !== 'table' || !stageRef.current || useSugiyamaLocalLayout) {
             return;
           }
           event.preventDefault();
@@ -2076,6 +2126,15 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
             <option value="octolinear">octolinear</option>
           </select>
         </label>
+        {isLocalContext && (
+          <label>
+            Detail layout:
+            <select value={detailLayoutMode} onChange={(e) => setDetailLayoutMode(e.target.value as DetailLayoutMode)}>
+              <option value="force">Force graph</option>
+              <option value="sugiyama">Sugiyama graph</option>
+            </select>
+          </label>
+        )}
          <button onClick={resetZoomView}>Reset zoom</button>
         <button onClick={() => setShowLegendPanel((v) => !v)}>{showLegendPanel ? 'Hide legend' : 'Show legend'}</button>
         <button onClick={() => setShowHelpPanel((v) => !v)}>{showHelpPanel ? 'Hide help' : 'Show help'}</button>
@@ -2183,14 +2242,6 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
           </g>
         </svg>
 
-        <div className="node-layer" style={{ transform: cssZoomTransform(transform) }}>
-          {unselectedRenderNodes.map((node) => renderNodeCard(node))}
-        </div>
-
-        <div className="node-layer node-layer-highlight" style={{ transform: cssZoomTransform(transform) }}>
-          {highlightedRenderNodes.map((node) => renderNodeCard(node))}
-        </div>
-
          <svg width={canvasWidth} height={canvasHeight} className="edge-layer edge-layer-highlight">
           <g transform={transform.toString()}>
             {emphasizedEdgeItems.map((item) => renderEdge(item, true))}
@@ -2217,6 +2268,14 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
             ))}
           </g>
          </svg>
+
+         <div className="node-layer" style={{ transform: cssZoomTransform(transform) }}>
+           {unselectedRenderNodes.map((node) => renderNodeCard(node))}
+         </div>
+
+         <div className="node-layer node-layer-highlight" style={{ transform: cssZoomTransform(transform) }}>
+           {highlightedRenderNodes.map((node) => renderNodeCard(node))}
+         </div>
            </div>
          </div>
       </div>
