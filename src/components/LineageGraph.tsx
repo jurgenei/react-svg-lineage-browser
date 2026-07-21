@@ -180,6 +180,7 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
    const [dragPanelState, setDragPanelState] = useState<DragPanelState | null>(null);
    const preLocalNodePositionsRef = useRef<Map<string, { x: number; y: number }> | null>(null);
     const lastSugiyamaCenteredPivotRef = useRef<string | null>(null);
+    const lastLocalGraphCenteredKeyRef = useRef<string | null>(null);
 
   const registerNodeElement = useCallback((nodeId: string, element: HTMLButtonElement | null) => {
     const currentElement = nodeElementsRef.current.get(nodeId);
@@ -1602,6 +1603,51 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
     panToNode(pivotNode, transform.k, 220);
   }, [useSugiyamaLocalLayout, sugiyamaPivotNodeId, nodeMap, transform.k]);
 
+  useEffect(() => {
+    if (!isLocalContext || !localRootNodeId || nodesWithManualPositions.length === 0) {
+      lastLocalGraphCenteredKeyRef.current = null;
+      return;
+    }
+
+    const centerKey = `${localRootNodeId}|${detailLayoutMode}|${nodesWithManualPositions.length}`;
+    if (lastLocalGraphCenteredKeyRef.current === centerKey) {
+      return;
+    }
+
+    let minX = Number.POSITIVE_INFINITY;
+    let minY = Number.POSITIVE_INFINITY;
+    let maxX = Number.NEGATIVE_INFINITY;
+    let maxY = Number.NEGATIVE_INFINITY;
+
+    for (const node of nodesWithManualPositions) {
+      const measured = nodeSizes.get(node.id);
+      const nodeWidth = measured?.width ?? 190;
+      const nodeHeight = measured?.height ?? 48;
+      const cx = node.x + nodeWidth / 2;
+      const cy = node.y + nodeHeight / 2;
+      minX = Math.min(minX, cx);
+      minY = Math.min(minY, cy);
+      maxX = Math.max(maxX, cx);
+      maxY = Math.max(maxY, cy);
+    }
+
+    if (!Number.isFinite(minX) || !Number.isFinite(minY) || !Number.isFinite(maxX) || !Number.isFinite(maxY)) {
+      return;
+    }
+
+    lastLocalGraphCenteredKeyRef.current = centerKey;
+    const centerX = (minX + maxX) / 2;
+    const centerY = (minY + maxY) / 2;
+    panToWorldPoint(centerX, centerY, transform.k, 220);
+  }, [
+    isLocalContext,
+    localRootNodeId,
+    detailLayoutMode,
+    nodesWithManualPositions,
+    nodeSizes,
+    transform.k,
+  ]);
+
   // Auto-fit viewport on first load or data change
   const hasInitialFitRef = useRef(!isIdentityTransform(transform));
   const lastNodeCountRef = useRef(0);
@@ -1713,14 +1759,12 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
     setPendingFocusId(nodeId);
   }
 
-   function panToNode(node: SimNode, zoomScale: number, duration = 280) {
+   function panToWorldPoint(worldX: number, worldY: number, zoomScale: number, duration = 280) {
      if (!svgRef.current || !zoomBehaviorRef.current) {
        return;
      }
-     const nodeX = node.x + 85;
-     const nodeY = node.y + 24;
-      const tx = canvasWidth / 2 - (nodeX * zoomScale);
-      const ty = canvasHeight / 2 - (nodeY * zoomScale);
+     const tx = canvasWidth / 2 - (worldX * zoomScale);
+     const ty = canvasHeight / 2 - (worldY * zoomScale);
      const targetTransform = zoomIdentity.translate(tx, ty).scale(zoomScale);
 
      select(svgRef.current)
@@ -1728,6 +1772,12 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
        .duration(duration)
        .ease(easeCubicOut)
        .call(zoomBehaviorRef.current.transform as never, targetTransform);
+   }
+
+   function panToNode(node: SimNode, zoomScale: number, duration = 280) {
+     const nodeX = node.x + 85;
+     const nodeY = node.y + 24;
+     panToWorldPoint(nodeX, nodeY, zoomScale, duration);
    }
 
    function jumpToNode(node: SimNode, zoomScale: number = 1) {
