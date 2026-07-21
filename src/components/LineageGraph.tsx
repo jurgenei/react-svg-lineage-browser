@@ -312,6 +312,30 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
   }, [isLocalContext, detailLayoutMode, selectedNodeId, localRootNodeId, activeGraph.nodes]);
 
   const useSugiyamaLocalLayout = Boolean(sugiyamaPivotNodeId);
+  const sugiyamaInOutNeighborIds = useMemo(() => {
+    if (!useSugiyamaLocalLayout || !sugiyamaPivotNodeId) {
+      return new Set<string>();
+    }
+    const toPivot = new Set<string>();
+    const fromPivot = new Set<string>();
+    for (const link of links) {
+      const src = typeof link.source === 'string' ? link.source : link.source.id;
+      const dst = typeof link.target === 'string' ? link.target : link.target.id;
+      if (dst === sugiyamaPivotNodeId && src !== sugiyamaPivotNodeId) {
+        toPivot.add(src);
+      }
+      if (src === sugiyamaPivotNodeId && dst !== sugiyamaPivotNodeId) {
+        fromPivot.add(dst);
+      }
+    }
+    const inOut = new Set<string>();
+    for (const nodeId of toPivot) {
+      if (fromPivot.has(nodeId)) {
+        inOut.add(nodeId);
+      }
+    }
+    return inOut;
+  }, [useSugiyamaLocalLayout, sugiyamaPivotNodeId, links]);
   const nodesWithDetailLayout = useMemo(() => {
     if (!useSugiyamaLocalLayout || !sugiyamaPivotNodeId) {
       return nodesWithStacks;
@@ -768,6 +792,7 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
       for (const item of items) {
         const sourcePortPos = getPortPosition(item.source.id, 'source', item.bundleColor);
         const targetPortPos = getPortPosition(item.target.id, 'target', item.bundleColor);
+        const forcedPortSides = resolveSugiyamaInOutNeighborPortSides(item);
 
         const anchors = getAnchoredEndpoints(
           item.source,
@@ -779,7 +804,9 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
           null,
           null,
           sourcePortPos,
-          targetPortPos
+          targetPortPos,
+          forcedPortSides.source,
+          forcedPortSides.target
         );
         baseAnchorsByItem.set(item.key, { start: anchors.start, end: anchors.end });
       }
@@ -859,7 +886,19 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
       }
     }
     return items;
-  }, [renderLinks, nodeMap, highlightState, dimSet, pivotNodeId, nodeSizes, edgeMode, orthogonalPorts]);
+  }, [
+    renderLinks,
+    nodeMap,
+    highlightState,
+    dimSet,
+    pivotNodeId,
+    nodeSizes,
+    edgeMode,
+    orthogonalPorts,
+    useSugiyamaLocalLayout,
+    sugiyamaPivotNodeId,
+    sugiyamaInOutNeighborIds,
+  ]);
 
   const highlightedEdgeItems = useMemo(
     () => edgeRenderItems.filter((item) => highlightedNodeIds.has(item.source.id) && highlightedNodeIds.has(item.target.id)),
@@ -2001,6 +2040,7 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
   }
 
   function renderEdge(item: EdgeRenderItem, showLabel: boolean) {
+    const forcedPortSides = resolveSugiyamaInOutNeighborPortSides(item);
     const { start, end } = getAnchoredEndpoints(
       item.source,
       item.target,
@@ -2009,7 +2049,11 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
       item.parallelTotal,
       orthogonalPorts,
       item.sharedSourcePort,
-      item.sharedTargetPort
+      item.sharedTargetPort,
+      'middle',
+      'middle',
+      forcedPortSides.source,
+      forcedPortSides.target
     );
     const sx = start.x;
     const sy = start.y;
@@ -2036,7 +2080,9 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
             item.parallelIndex,
             item.parallelTotal,
             item.sharedSourcePort,
-            item.sharedTargetPort
+            item.sharedTargetPort,
+            forcedPortSides.source,
+            forcedPortSides.target
           )
         : routingMode === 'octolinear'
           ? octolinearEdgePath(
@@ -2048,7 +2094,9 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
               item.parallelIndex,
               item.parallelTotal,
               item.sharedSourcePort,
-              item.sharedTargetPort
+              item.sharedTargetPort,
+              forcedPortSides.source,
+              forcedPortSides.target
             )
         : edgePath(
             item.source,
@@ -2060,7 +2108,9 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
             nodeSizes,
             orthogonalPorts,
             item.sharedSourcePort,
-            item.sharedTargetPort
+            item.sharedTargetPort,
+            forcedPortSides.source,
+            forcedPortSides.target
           );
 
     const jumpPoints = manhattanLineJumps.get(item.key) ?? [];
@@ -2125,6 +2175,34 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
         )}
       </g>
     );
+  }
+
+  function resolveSugiyamaInOutNeighborPortSides(item: EdgeRenderItem): { source: NodeSide | null; target: NodeSide | null } {
+    if (!useSugiyamaLocalLayout || !sugiyamaPivotNodeId || sugiyamaInOutNeighborIds.size === 0) {
+      return { source: null, target: null };
+    }
+
+    const pivotNode = nodeMap.get(sugiyamaPivotNodeId);
+    if (!pivotNode) {
+      return { source: null, target: null };
+    }
+
+    const pivotSize = nodeSizes.get(pivotNode.id);
+    const pivotCenterX = pivotNode.x + (pivotSize?.width ?? 190) / 2;
+    const neighborSideByHalfPlane = (neighbor: SimNode): NodeSide => {
+      const neighborSize = nodeSizes.get(neighbor.id);
+      const neighborCenterX = neighbor.x + (neighborSize?.width ?? 190) / 2;
+      // Flip mapping: left half uses right port; right half uses left port.
+      return neighborCenterX < pivotCenterX ? 'right' : 'left';
+    };
+
+    if (item.source.id === sugiyamaPivotNodeId && sugiyamaInOutNeighborIds.has(item.target.id)) {
+      return { source: null, target: neighborSideByHalfPlane(item.target) };
+    }
+    if (item.target.id === sugiyamaPivotNodeId && sugiyamaInOutNeighborIds.has(item.source.id)) {
+      return { source: neighborSideByHalfPlane(item.source), target: null };
+    }
+    return { source: null, target: null };
   }
 
    const cycleToolbarPosition = () => {
@@ -2353,7 +2431,9 @@ function edgePath(
   nodeSizes: Map<string, { width: number; height: number }>,
   orthogonalPorts = false,
   sharedSourcePort: AnchorPoint | null = null,
-  sharedTargetPort: AnchorPoint | null = null
+  sharedTargetPort: AnchorPoint | null = null,
+  forcedSourceSide: NodeSide | null = null,
+  forcedTargetSide: NodeSide | null = null
 ): string {
   const anchors = getAnchoredEndpoints(
     source,
@@ -2363,7 +2443,11 @@ function edgePath(
     parallelTotal,
     orthogonalPorts,
     sharedSourcePort,
-    sharedTargetPort
+    sharedTargetPort,
+    'middle',
+    'middle',
+    forcedSourceSide,
+    forcedTargetSide
   );
   const { start, end } = anchors;
   const sx = start.x;
@@ -2604,13 +2688,21 @@ function getAnchoredEndpoints(
   sharedSourcePort: AnchorPoint | null = null,
   sharedTargetPort: AnchorPoint | null = null,
   sourcePortPosition: 'begin' | 'middle' | 'end' = 'middle',
-  targetPortPosition: 'begin' | 'middle' | 'end' = 'middle'
+  targetPortPosition: 'begin' | 'middle' | 'end' = 'middle',
+  forcedSourceSide: NodeSide | null = null,
+  forcedTargetSide: NodeSide | null = null
 ) {
   const sourceRect = getNodeRect(source, nodeSizes);
   const targetRect = getNodeRect(target, nodeSizes);
   const base = orthogonalPorts
     ? anchorOrthogonalPorts(sourceRect, targetRect, sourcePortPosition, targetPortPosition)
     : anchorNearestPorts(sourceRect, targetRect, source.id, sourcePortPosition, targetPortPosition);
+  if (forcedSourceSide) {
+    base.start = createAnchorOnSide(sourceRect, forcedSourceSide, sourcePortPosition);
+  }
+  if (forcedTargetSide) {
+    base.end = createAnchorOnSide(targetRect, forcedTargetSide, targetPortPosition);
+  }
   if (sharedSourcePort) {
     base.start = sharedSourcePort;
   }
@@ -2749,9 +2841,22 @@ function manhattanEdgePath(
   parallelIndex = 0,
   parallelTotal = 1,
   sharedSourcePort: AnchorPoint | null = null,
-  sharedTargetPort: AnchorPoint | null = null
+  sharedTargetPort: AnchorPoint | null = null,
+  forcedSourceSide: NodeSide | null = null,
+  forcedTargetSide: NodeSide | null = null
 ): string {
-  const points = manhattanRoutePoints(source, target, nodeSizes, orthogonalPorts, parallelIndex, parallelTotal, sharedSourcePort, sharedTargetPort);
+  const points = manhattanRoutePoints(
+    source,
+    target,
+    nodeSizes,
+    orthogonalPorts,
+    parallelIndex,
+    parallelTotal,
+    sharedSourcePort,
+    sharedTargetPort,
+    forcedSourceSide,
+    forcedTargetSide
+  );
   return roundedOrthogonalPath(points, 12);
 }
 
@@ -2763,7 +2868,9 @@ function manhattanRoutePoints(
   parallelIndex = 0,
   parallelTotal = 1,
   sharedSourcePort: AnchorPoint | null = null,
-  sharedTargetPort: AnchorPoint | null = null
+  sharedTargetPort: AnchorPoint | null = null,
+  forcedSourceSide: NodeSide | null = null,
+  forcedTargetSide: NodeSide | null = null
 ): Array<{ x: number; y: number }> {
   const anchors = getAnchoredEndpoints(
     source,
@@ -2773,7 +2880,11 @@ function manhattanRoutePoints(
     parallelTotal,
     orthogonalPorts,
     sharedSourcePort,
-    sharedTargetPort
+    sharedTargetPort,
+    'middle',
+    'middle',
+    forcedSourceSide,
+    forcedTargetSide
   );
   const sx = anchors.start.x;
   const sy = anchors.start.y;
@@ -2810,7 +2921,9 @@ function octolinearEdgePath(
   parallelIndex = 0,
   parallelTotal = 1,
   sharedSourcePort: AnchorPoint | null = null,
-  sharedTargetPort: AnchorPoint | null = null
+  sharedTargetPort: AnchorPoint | null = null,
+  forcedSourceSide: NodeSide | null = null,
+  forcedTargetSide: NodeSide | null = null
 ): string {
   const points = octolinearRoutePoints(
     source,
@@ -2821,7 +2934,9 @@ function octolinearEdgePath(
     parallelIndex,
     parallelTotal,
     sharedSourcePort,
-    sharedTargetPort
+    sharedTargetPort,
+    forcedSourceSide,
+    forcedTargetSide
   );
   return roundedOrthogonalPath(points, 12);
 }
@@ -2835,7 +2950,9 @@ function octolinearRoutePoints(
   parallelIndex = 0,
   parallelTotal = 1,
   sharedSourcePort: AnchorPoint | null = null,
-  sharedTargetPort: AnchorPoint | null = null
+  sharedTargetPort: AnchorPoint | null = null,
+  forcedSourceSide: NodeSide | null = null,
+  forcedTargetSide: NodeSide | null = null
 ): Array<{ x: number; y: number }> {
   const anchors = getAnchoredEndpoints(
     source,
@@ -2845,7 +2962,11 @@ function octolinearRoutePoints(
     parallelTotal,
     orthogonalPorts,
     sharedSourcePort,
-    sharedTargetPort
+    sharedTargetPort,
+    'middle',
+    'middle',
+    forcedSourceSide,
+    forcedTargetSide
   );
 
   const start = { x: anchors.start.x, y: anchors.start.y };
@@ -2929,7 +3050,18 @@ function octolinearRoutePoints(
   }
 
    if (!Number.isFinite(bestScore)) {
-     return manhattanRoutePoints(source, target, nodeSizes, orthogonalPorts, parallelIndex, parallelTotal, sharedSourcePort, sharedTargetPort);
+     return manhattanRoutePoints(
+       source,
+       target,
+       nodeSizes,
+       orthogonalPorts,
+       parallelIndex,
+       parallelTotal,
+       sharedSourcePort,
+       sharedTargetPort,
+       forcedSourceSide,
+       forcedTargetSide
+     );
    }
 
    // Ensure best candidate is properly aligned to octolinear directions
