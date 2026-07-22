@@ -59,6 +59,7 @@ interface PurpleHybridEdgeHint {
   junctionX: number;
   junctionY: number;
   outgoingFromPivot: boolean;
+  pivotIsSource: boolean;
 }
 
 interface PurpleHybridTrunkItem {
@@ -104,6 +105,7 @@ const OCTOLINEAR_SECONDARY_OFFSETS = [72, -72, 96, -96];
 const OCTOLINEAR_CLEARANCE = 22;
 const OCTOLINEAR_OBSTACLE_RANGE = 420;
 const OCTOLINEAR_CACHE_LIMIT = 1200;
+const EDGE_OUTSIDE_HIT_GAP = 6;
 const octolinearRouteCache = new Map<string, Array<{ x: number; y: number }>>();
 
 function readGraphUiPrefs(): Partial<GraphUiPrefs> {
@@ -819,10 +821,10 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
           item.parallelIndex,
           item.parallelTotal,
           orthogonalPorts,
-          null,
-          null,
-          sourcePortPos,
-          targetPortPos,
+          item.sharedSourcePort,
+          item.sharedTargetPort,
+          'middle',
+          'middle',
           forcedPortSides.source,
           forcedPortSides.target
         );
@@ -892,14 +894,16 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
           item.sharedTargetPort = sharedPort;
         }
       }
-      // Assign shared ports to bidirectional bundles that don't have them yet
+
+      // Fallback for non-Sugiyama bidirectional bundles.
       for (const item of items) {
-        if (item.isBidirectionalBundle && !item.sharedSourcePort && !item.sharedTargetPort) {
-          const anchors = baseAnchorsByItem.get(item.key);
-          if (anchors) {
-            item.sharedSourcePort = { x: anchors.start.x, y: anchors.start.y, side: anchors.start.side };
-            item.sharedTargetPort = { x: anchors.end.x, y: anchors.end.y, side: anchors.end.side };
-          }
+        if (!item.isBidirectionalBundle || item.sharedSourcePort || item.sharedTargetPort) {
+          continue;
+        }
+        const anchors = baseAnchorsByItem.get(item.key);
+        if (anchors) {
+          item.sharedSourcePort = { x: anchors.start.x, y: anchors.start.y, side: anchors.start.side };
+          item.sharedTargetPort = { x: anchors.end.x, y: anchors.end.y, side: anchors.end.side };
         }
       }
     }
@@ -998,6 +1002,7 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
     type Candidate = {
       item: EdgeRenderItem;
       outgoingFromPivot: boolean;
+      pivotIsSource: boolean;
       neighbor: SimNode;
       verticalSide: 'top' | 'bottom';
       bundleKey: string;
@@ -1005,17 +1010,21 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
 
     const candidates: Candidate[] = [];
     for (const item of edgeRenderItems) {
-      if (item.bundleColor !== 'purple' || item.isBidirectionalBundle) {
+      if (item.bundleColor !== 'purple') {
         continue;
       }
 
       let outgoingFromPivot: boolean;
+      let pivotIsSource: boolean;
       let neighbor: SimNode;
       if (item.source.id === sugiyamaPivotNodeId && sugiyamaInOutNeighborIds.has(item.target.id)) {
+        pivotIsSource = true;
         outgoingFromPivot = true;
         neighbor = item.target;
       } else if (item.target.id === sugiyamaPivotNodeId && sugiyamaInOutNeighborIds.has(item.source.id)) {
-        outgoingFromPivot = false;
+        pivotIsSource = false;
+        // For bidirectional bundles, always draw trunk from pivot and tail to neighbor.
+        outgoingFromPivot = item.isBidirectionalBundle ? true : false;
         neighbor = item.source;
       } else {
         continue;
@@ -1025,7 +1034,7 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
       const neighborCenterY = neighborRect.y + neighborRect.height / 2;
       const verticalSide: 'top' | 'bottom' = neighborCenterY < pivotCenterY ? 'top' : 'bottom';
       const bundleKey = `${verticalSide}|${(item.labelLines.join('|') || item.edgeKey).toLowerCase()}`;
-      candidates.push({ item, outgoingFromPivot, neighbor, verticalSide, bundleKey });
+      candidates.push({ item, outgoingFromPivot, pivotIsSource, neighbor, verticalSide, bundleKey });
     }
 
     const bundleGroups = new Map<string, Candidate[]>();
@@ -1105,6 +1114,7 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
           junctionX: junction.x,
           junctionY: junction.y,
           outgoingFromPivot: candidate.outgoingFromPivot,
+          pivotIsSource: candidate.pivotIsSource,
         });
       }
     }
@@ -1147,9 +1157,29 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
       if (!item.labelLines.length || item.faded) {
         continue;
       }
-      const { start, end } = getAnchoredEndpoints(item.source, item.target, nodeSizes, 0, 1, orthogonalPorts);
+      const forcedPortSides = resolveSugiyamaInOutNeighborPortSides(item);
+      const { start, end } = getAnchoredEndpoints(
+        item.source,
+        item.target,
+        nodeSizes,
+        item.parallelIndex,
+        item.parallelTotal,
+        orthogonalPorts,
+        item.sharedSourcePort,
+        item.sharedTargetPort,
+        'middle',
+        'middle',
+        forcedPortSides.source,
+        forcedPortSides.target
+      );
+      const purpleHint = purpleHybridState.hints.get(item.key);
       let baseX = (start.x + end.x) / 2;
       let baseY = (start.y + end.y) / 2;
+      if (purpleHint) {
+        // Keep the label centered on the actual purple bundled trunk segment.
+        baseX = (purpleHint.pivotX + purpleHint.junctionX) / 2;
+        baseY = (purpleHint.pivotY + purpleHint.junctionY) / 2;
+      }
       const longestLabel = item.labelLines.reduce((max, text) => Math.max(max, text.length), 0);
       const w = Math.max(longestLabel * 6.3 + 18, 44);
       const h = Math.max(18, item.labelLines.length * lineHeight + 8);
@@ -1182,7 +1212,7 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
     }
 
     return { positions: byKey, overlapCounts };
-  }, [emphasizedEdgeItems, nodeSizes, orthogonalPorts, highlightedNodeIds, nodeMap]);
+  }, [emphasizedEdgeItems, nodeSizes, orthogonalPorts, highlightedNodeIds, nodeMap, purpleHybridState]);
 
   const groupedLabelState = useMemo(() => {
     const GROUP_DELIM = '\u0001';
@@ -2202,7 +2232,7 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
 
   function renderEdge(item: EdgeRenderItem, showLabel: boolean) {
     const forcedPortSides = resolveSugiyamaInOutNeighborPortSides(item);
-    const { start, end } = getAnchoredEndpoints(
+    const anchors = getAnchoredEndpoints(
       item.source,
       item.target,
       nodeSizes,
@@ -2216,6 +2246,7 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
       forcedPortSides.source,
       forcedPortSides.target
     );
+    const { start, end } = anchors;
     const sx = start.x;
     const sy = start.y;
     const tx = end.x;
@@ -2279,30 +2310,105 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
       if (!purpleHint) {
         return defaultPathD;
       }
-      const tailLength = 34;
-      if (purpleHint.outgoingFromPivot) {
-        const endDx = tx - purpleHint.junctionX;
-        const endDy = ty - purpleHint.junctionY;
-        const endLen = Math.hypot(endDx, endDy) || 1;
-        const ux = endDx / endLen;
-        const uy = endDy / endLen;
-        const c1x = purpleHint.junctionX + ux * Math.min(48, endLen * 0.38);
-        const c1y = purpleHint.junctionY + uy * Math.min(48, endLen * 0.38);
-        const c2x = tx - ux * Math.min(tailLength, endLen * 0.35);
-        const c2y = ty - uy * Math.min(tailLength, endLen * 0.35);
-        return `M ${purpleHint.pivotX} ${purpleHint.pivotY} L ${purpleHint.junctionX} ${purpleHint.junctionY} C ${c1x} ${c1y}, ${c2x} ${c2y}, ${tx} ${ty}`;
+
+      const manhattanPoints = (fromX: number, fromY: number, toX: number, toY: number) => {
+        const dx = toX - fromX;
+        const dy = toY - fromY;
+        if (Math.abs(dx) >= Math.abs(dy)) {
+          const mx = fromX + dx * 0.5;
+          return [
+            { x: fromX, y: fromY },
+            { x: mx, y: fromY },
+            { x: mx, y: toY },
+            { x: toX, y: toY }
+          ];
+        }
+        const my = fromY + dy * 0.5;
+        return [
+          { x: fromX, y: fromY },
+          { x: fromX, y: my },
+          { x: toX, y: my },
+          { x: toX, y: toY }
+        ];
+      };
+
+      const octolinearPoints = (fromX: number, fromY: number, toX: number, toY: number) => {
+        const dx = toX - fromX;
+        const dy = toY - fromY;
+        const absDx = Math.abs(dx);
+        const absDy = Math.abs(dy);
+        if (absDx < 1e-6 && absDy < 1e-6) {
+          return [{ x: fromX, y: fromY }, { x: toX, y: toY }];
+        }
+        const sxSign = Math.sign(dx) || 1;
+        const sySign = Math.sign(dy) || 1;
+        const diag = Math.min(absDx, absDy);
+        const points = [{ x: fromX, y: fromY }];
+        if (diag > 1e-6) {
+          points.push({ x: fromX + sxSign * diag, y: fromY + sySign * diag });
+        }
+        points.push({ x: toX, y: toY });
+        return normalizeOctolinearRoute(points);
+      };
+
+      const routeTailPoints = (fromX: number, fromY: number, toX: number, toY: number) =>
+        routingMode === 'octolinear'
+          ? octolinearPoints(fromX, fromY, toX, toY)
+          : manhattanPoints(fromX, fromY, toX, toY);
+
+      const pivot = { x: purpleHint.pivotX, y: purpleHint.pivotY };
+      const junction = { x: purpleHint.junctionX, y: purpleHint.junctionY };
+      const neighbor = purpleHint.pivotIsSource
+        ? {
+            borderX: tx,
+            borderY: ty,
+            outsideX: anchors.endOutside.x,
+            outsideY: anchors.endOutside.y,
+            nx: anchors.endNormal.x,
+            ny: anchors.endNormal.y
+          }
+        : {
+            borderX: sx,
+            borderY: sy,
+            outsideX: anchors.startOutside.x,
+            outsideY: anchors.startOutside.y,
+            nx: anchors.startNormal.x,
+            ny: anchors.startNormal.y
+          };
+
+      // Canonical trunk->tail geometry, reversed when the edge direction is neighbor->pivot.
+      if (routingMode !== 'smooth') {
+        const tail = routeTailPoints(junction.x, junction.y, neighbor.outsideX, neighbor.outsideY);
+        const canonicalPoints = [
+          pivot,
+          junction,
+          ...tail.slice(1),
+          { x: neighbor.borderX, y: neighbor.borderY }
+        ];
+        return roundedOrthogonalPath(
+          purpleHint.pivotIsSource ? canonicalPoints : [...canonicalPoints].reverse(),
+          10
+        );
       }
 
-      const startDx = purpleHint.junctionX - sx;
-      const startDy = purpleHint.junctionY - sy;
-      const startLen = Math.hypot(startDx, startDy) || 1;
-      const ux = startDx / startLen;
-      const uy = startDy / startLen;
-      const c1x = sx + ux * Math.min(tailLength, startLen * 0.35);
-      const c1y = sy + uy * Math.min(tailLength, startLen * 0.35);
-      const c2x = purpleHint.junctionX - ux * Math.min(48, startLen * 0.38);
-      const c2y = purpleHint.junctionY - uy * Math.min(48, startLen * 0.38);
-      return `M ${sx} ${sy} C ${c1x} ${c1y}, ${c2x} ${c2y}, ${purpleHint.junctionX} ${purpleHint.junctionY} L ${purpleHint.pivotX} ${purpleHint.pivotY}`;
+      const tailLength = 34;
+      const trunkDx = junction.x - pivot.x;
+      const trunkDy = junction.y - pivot.y;
+      const trunkLen = Math.hypot(trunkDx, trunkDy) || 1;
+      const trunkUx = trunkDx / trunkLen;
+      const trunkUy = trunkDy / trunkLen;
+      const tailDx = neighbor.outsideX - junction.x;
+      const tailDy = neighbor.outsideY - junction.y;
+      const tailLen = Math.hypot(tailDx, tailDy) || 1;
+      const c1x = junction.x + trunkUx * Math.min(48, tailLen * 0.38);
+      const c1y = junction.y + trunkUy * Math.min(48, tailLen * 0.38);
+      const c2x = neighbor.borderX + neighbor.nx * Math.min(tailLength, tailLen * 0.35);
+      const c2y = neighbor.borderY + neighbor.ny * Math.min(tailLength, tailLen * 0.35);
+
+      if (purpleHint.pivotIsSource) {
+        return `M ${pivot.x} ${pivot.y} L ${junction.x} ${junction.y} C ${c1x} ${c1y}, ${c2x} ${c2y}, ${neighbor.borderX} ${neighbor.borderY}`;
+      }
+      return `M ${neighbor.borderX} ${neighbor.borderY} C ${c2x} ${c2y}, ${c1x} ${c1y}, ${junction.x} ${junction.y} L ${pivot.x} ${pivot.y}`;
     })();
 
     const jumpPoints = manhattanLineJumps.get(item.key) ?? [];
@@ -2401,6 +2507,7 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
       // Keep neighbor port horizontal and facing the selected node.
       return neighborCenterX < pivotCenterX ? 'right' : 'left';
     };
+
 
     if (item.source.id === sugiyamaPivotNodeId && sugiyamaInOutNeighborIds.has(item.target.id)) {
       return {
@@ -2670,16 +2777,17 @@ function edgePath(
   const sy = start.y;
   const tx = end.x;
   const ty = end.y;
-  const sourceStubX = sx + anchors.startNormal.x * 18;
-  const sourceStubY = sy + anchors.startNormal.y * 18;
-  const targetStubX = tx + anchors.endNormal.x * 18;
-  const targetStubY = ty + anchors.endNormal.y * 18;
+  const sourceOutsideX = anchors.startOutside.x;
+  const sourceOutsideY = anchors.startOutside.y;
+  const targetOutsideX = anchors.endOutside.x;
+  const targetOutsideY = anchors.endOutside.y;
+  const sourceStubX = sourceOutsideX + anchors.startNormal.x * 18;
+  const sourceStubY = sourceOutsideY + anchors.startNormal.y * 18;
+  const targetStubX = targetOutsideX + anchors.endNormal.x * 18;
+  const targetStubY = targetOutsideY + anchors.endNormal.y * 18;
 
   if (mode === 'none') {
-    if (orthogonalPorts) {
-      return `M ${sx} ${sy} L ${sourceStubX} ${sourceStubY} L ${targetStubX} ${targetStubY} L ${tx} ${ty}`;
-    }
-    return `M ${sx} ${sy} L ${tx} ${ty}`;
+    return `M ${sx} ${sy} L ${sourceOutsideX} ${sourceOutsideY} L ${targetOutsideX} ${targetOutsideY} L ${tx} ${ty}`;
   }
 
   // Both 'soft' and 'grouped' use the softbundle algorithm for smooth routing
@@ -2692,9 +2800,9 @@ function edgePath(
   const c2x = targetStubX - (orthogonalPorts ? 0 : dx * 0.28) + anchors.endNormal.x * bend;
   const c2y = targetStubY - (orthogonalPorts ? 0 : dy * 0.28) + anchors.endNormal.y * bend;
   if (orthogonalPorts) {
-    return `M ${sx} ${sy} L ${sourceStubX} ${sourceStubY} C ${c1x} ${c1y}, ${c2x} ${c2y}, ${targetStubX} ${targetStubY} L ${tx} ${ty}`;
+    return `M ${sx} ${sy} L ${sourceOutsideX} ${sourceOutsideY} L ${sourceStubX} ${sourceStubY} C ${c1x} ${c1y}, ${c2x} ${c2y}, ${targetStubX} ${targetStubY} L ${targetOutsideX} ${targetOutsideY} L ${tx} ${ty}`;
   }
-  return `M ${sx} ${sy} C ${c1x} ${c1y}, ${c2x} ${c2y}, ${tx} ${ty}`;
+  return `M ${sx} ${sy} L ${sourceOutsideX} ${sourceOutsideY} C ${c1x} ${c1y}, ${c2x} ${c2y}, ${targetOutsideX} ${targetOutsideY} L ${tx} ${ty}`;
 }
 
 type NodeSide = 'left' | 'right' | 'top' | 'bottom';
@@ -2932,11 +3040,25 @@ function getAnchoredEndpoints(
     ? offsetOrthogonalPorts(base.start, base.end, sourceRect, targetRect, offset)
     : offsetAlongLineNormal(base.start, base.end, offset);
 
+  const startOutside = offsetAnchorAlongNormal(start, EDGE_OUTSIDE_HIT_GAP);
+  const endOutside = offsetAnchorAlongNormal(end, EDGE_OUTSIDE_HIT_GAP);
+
   return {
     start,
     end,
+    startOutside,
+    endOutside,
     startNormal: sideNormal(start.side),
     endNormal: sideNormal(end.side)
+  };
+}
+
+function offsetAnchorAlongNormal(point: AnchorPoint, distance: number): AnchorPoint {
+  const normal = sideNormal(point.side);
+  return {
+    ...point,
+    x: point.x + normal.x * distance,
+    y: point.y + normal.y * distance
   };
 }
 
@@ -3102,10 +3224,10 @@ function manhattanRoutePoints(
     forcedSourceSide,
     forcedTargetSide
   );
-  const sx = anchors.start.x;
-  const sy = anchors.start.y;
-  const tx = anchors.end.x;
-  const ty = anchors.end.y;
+  const sx = anchors.startOutside.x;
+  const sy = anchors.startOutside.y;
+  const tx = anchors.endOutside.x;
+  const ty = anchors.endOutside.y;
 
   const dx = tx - sx;
   const dy = ty - sy;
@@ -3113,18 +3235,22 @@ function manhattanRoutePoints(
   if (Math.abs(dx) >= Math.abs(dy)) {
     const mx = sx + dx * 0.5;
     return [
+      { x: anchors.start.x, y: anchors.start.y },
       { x: sx, y: sy },
       { x: mx, y: sy },
       { x: mx, y: ty },
-      { x: tx, y: ty }
+      { x: tx, y: ty },
+      { x: anchors.end.x, y: anchors.end.y }
     ];
   }
   const my = sy + dy * 0.5;
   return [
+    { x: anchors.start.x, y: anchors.start.y },
     { x: sx, y: sy },
     { x: sx, y: my },
     { x: tx, y: my },
-    { x: tx, y: ty }
+    { x: tx, y: ty },
+    { x: anchors.end.x, y: anchors.end.y }
   ];
 }
 
@@ -3185,8 +3311,8 @@ function octolinearRoutePoints(
     forcedTargetSide
   );
 
-  const start = { x: anchors.start.x, y: anchors.start.y };
-  const end = { x: anchors.end.x, y: anchors.end.y };
+  const start = { x: anchors.startOutside.x, y: anchors.startOutside.y };
+  const end = { x: anchors.endOutside.x, y: anchors.endOutside.y };
 
   const stubLength = orthogonalPorts ? 24 : 14;
   const startStub = {
@@ -3208,7 +3334,15 @@ function octolinearRoutePoints(
   }
 
   const coreCandidates = buildOctolinearCoreCandidates(startStub, endStub, OCTOLINEAR_PRIMARY_OFFSETS);
-  const fullCandidates = coreCandidates.map((core) => [start, startStub, ...core, endStub, end]);
+  const fullCandidates = coreCandidates.map((core) => [
+    { x: anchors.start.x, y: anchors.start.y },
+    start,
+    startStub,
+    ...core,
+    endStub,
+    end,
+    { x: anchors.end.x, y: anchors.end.y }
+  ]);
 
   let best = fullCandidates[0] ?? [start, end];
   let bestScore = Number.POSITIVE_INFINITY;
@@ -3240,7 +3374,15 @@ function octolinearRoutePoints(
   const bestCollisions = countRouteObstacleIntersections(best, obstacles);
   if (bestCollisions > 0 && OCTOLINEAR_SECONDARY_OFFSETS.length > 0) {
     const widenedOffsets = OCTOLINEAR_PRIMARY_OFFSETS.concat(OCTOLINEAR_SECONDARY_OFFSETS);
-    const secondaryCandidates = buildOctolinearCoreCandidates(startStub, endStub, widenedOffsets).map((core) => [start, startStub, ...core, endStub, end]);
+    const secondaryCandidates = buildOctolinearCoreCandidates(startStub, endStub, widenedOffsets).map((core) => [
+      { x: anchors.start.x, y: anchors.start.y },
+      start,
+      startStub,
+      ...core,
+      endStub,
+      end,
+      { x: anchors.end.x, y: anchors.end.y }
+    ]);
     for (const candidate of secondaryCandidates) {
       const intersections = countRouteObstacleIntersections(candidate, obstacles);
       const sourcePenalty = countRouteObstacleIntersections(candidate, [inflateRect(sourceRect, 6)]);
