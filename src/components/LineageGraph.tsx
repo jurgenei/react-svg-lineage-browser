@@ -53,6 +53,23 @@ interface LineJumpPoint {
   y: number;
 }
 
+interface PurpleHybridEdgeHint {
+  pivotX: number;
+  pivotY: number;
+  junctionX: number;
+  junctionY: number;
+  outgoingFromPivot: boolean;
+}
+
+interface PurpleHybridTrunkItem {
+  key: string;
+  pathD: string;
+  className: string;
+  strokeWidth: number;
+  opacity?: number;
+  faded: boolean;
+}
+
 interface GraphUiPrefs {
   focusDimStrength: number;
   autoZoomEnabled: boolean;
@@ -571,25 +588,26 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
     }
 
     const bidirectionalBundleKeys = new Set<string>();
-    for (const [labelKey, bundleLinks] of labelGrouped.entries()) {
-      const directions = new Set<string>();
-      for (const link of bundleLinks) {
-        const src = typeof link.source === 'string' ? link.source : link.source.id;
-        const dst = typeof link.target === 'string' ? link.target : link.target.id;
-        directions.add(`${src}->${dst}`);
+
+    // Check bidirectionality across ALL edges between any two nodes (regardless of label)
+    const pairDirections = new Map<string, Set<string>>();
+    for (const link of renderLinks) {
+      const src = typeof link.source === 'string' ? link.source : link.source.id;
+      const dst = typeof link.target === 'string' ? link.target : link.target.id;
+      const undirected = src < dst ? `${src}|${dst}` : `${dst}|${src}`;
+      if (!pairDirections.has(undirected)) {
+        pairDirections.set(undirected, new Set());
       }
-      if (directions.size < 2) {
-        continue;
+      pairDirections.get(undirected)!.add(`${src}->${dst}`);
+    }
+
+    // Mark pairs as bidirectional if they have edges in both directions
+    for (const [undirected, directions] of pairDirections.entries()) {
+      if (directions.size >= 2) {
+        const [leftId, rightId] = undirected.split('|');
+        bidirectionalBundleKeys.add(`${leftId}|${rightId}`);
+        bidirectionalBundleKeys.add(`${rightId}|${leftId}`);
       }
-      const [pairKey] = labelKey.split('|').length >= 3
-        ? [labelKey.split('|').slice(0, 2).join('|')]
-        : [labelKey];
-      const [leftId, rightId] = pairKey.split('|');
-      if (!leftId || !rightId) {
-        continue;
-      }
-      bidirectionalBundleKeys.add(`${leftId}|${rightId}`);
-      bidirectionalBundleKeys.add(`${rightId}|${leftId}`);
     }
 
     const processedBundlePairs = new Set<string>();
@@ -959,6 +977,149 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
     }
     return items;
   }, [displayedNonHighlightedEdgeItems, displayedHighlightedEdgeItems]);
+
+  const purpleHybridState = useMemo(() => {
+    const hints = new Map<string, PurpleHybridEdgeHint>();
+    const fadedTrunks: PurpleHybridTrunkItem[] = [];
+    const emphasizedTrunks: PurpleHybridTrunkItem[] = [];
+
+    if (!useSugiyamaLocalLayout || !sugiyamaPivotNodeId || detailLayoutMode !== 'sugiyama') {
+      return { hints, fadedTrunks, emphasizedTrunks };
+    }
+
+    const pivotNode = nodeMap.get(sugiyamaPivotNodeId);
+    if (!pivotNode) {
+      return { hints, fadedTrunks, emphasizedTrunks };
+    }
+
+    const pivotRect = getNodeRect(pivotNode, nodeSizes);
+    const pivotCenterY = pivotRect.y + pivotRect.height / 2;
+
+    type Candidate = {
+      item: EdgeRenderItem;
+      outgoingFromPivot: boolean;
+      neighbor: SimNode;
+      verticalSide: 'top' | 'bottom';
+      bundleKey: string;
+    };
+
+    const candidates: Candidate[] = [];
+    for (const item of edgeRenderItems) {
+      if (item.bundleColor !== 'purple' || item.isBidirectionalBundle) {
+        continue;
+      }
+
+      let outgoingFromPivot: boolean;
+      let neighbor: SimNode;
+      if (item.source.id === sugiyamaPivotNodeId && sugiyamaInOutNeighborIds.has(item.target.id)) {
+        outgoingFromPivot = true;
+        neighbor = item.target;
+      } else if (item.target.id === sugiyamaPivotNodeId && sugiyamaInOutNeighborIds.has(item.source.id)) {
+        outgoingFromPivot = false;
+        neighbor = item.source;
+      } else {
+        continue;
+      }
+
+      const neighborRect = getNodeRect(neighbor, nodeSizes);
+      const neighborCenterY = neighborRect.y + neighborRect.height / 2;
+      const verticalSide: 'top' | 'bottom' = neighborCenterY < pivotCenterY ? 'top' : 'bottom';
+      const bundleKey = `${verticalSide}|${(item.labelLines.join('|') || item.edgeKey).toLowerCase()}`;
+      candidates.push({ item, outgoingFromPivot, neighbor, verticalSide, bundleKey });
+    }
+
+    const bundleGroups = new Map<string, Candidate[]>();
+    for (const candidate of candidates) {
+      const arr = bundleGroups.get(candidate.bundleKey) ?? [];
+      arr.push(candidate);
+      bundleGroups.set(candidate.bundleKey, arr);
+    }
+
+    const sideBundleKeys = new Map<'top' | 'bottom', string[]>();
+    sideBundleKeys.set('top', []);
+    sideBundleKeys.set('bottom', []);
+    for (const key of bundleGroups.keys()) {
+      const side = key.startsWith('top|') ? 'top' : 'bottom';
+      sideBundleKeys.get(side)?.push(key);
+    }
+    for (const side of ['top', 'bottom'] as const) {
+      sideBundleKeys.get(side)?.sort();
+    }
+
+    const bundleAnchorByKey = new Map<string, AnchorPoint>();
+    const bundleJunctionByKey = new Map<string, { x: number; y: number }>();
+    for (const side of ['top', 'bottom'] as const) {
+      const keys = sideBundleKeys.get(side) ?? [];
+      const total = Math.max(1, keys.length);
+      for (let index = 0; index < keys.length; index += 1) {
+        const factor = total === 1 ? 0.5 : (index + 1) / (total + 1);
+        const guard = 8;
+        const x = clamp(pivotRect.x + guard + (pivotRect.width - 2 * guard) * factor, pivotRect.x + guard, pivotRect.x + pivotRect.width - guard);
+        const y = side === 'top' ? pivotRect.y : pivotRect.y + pivotRect.height;
+        const anchor: AnchorPoint = { x, y, side, portPosition: 'middle' };
+        bundleAnchorByKey.set(keys[index], anchor);
+
+        const sideNormal = side === 'top' ? { x: 0, y: -1 } : { x: 0, y: 1 };
+        const group = bundleGroups.get(keys[index]) ?? [];
+        let minDistance = Number.POSITIVE_INFINITY;
+        for (const candidate of group) {
+          const neighborRect = getNodeRect(candidate.neighbor, nodeSizes);
+          const neighborCenterX = neighborRect.x + neighborRect.width / 2;
+          const neighborCenterY = neighborRect.y + neighborRect.height / 2;
+          minDistance = Math.min(minDistance, Math.hypot(neighborCenterX - x, neighborCenterY - y));
+        }
+        const trunkLength = Number.isFinite(minDistance) ? clamp(minDistance * 0.33, 32, 110) : 58;
+        bundleJunctionByKey.set(keys[index], { x: x + sideNormal.x * trunkLength, y: y + sideNormal.y * trunkLength });
+      }
+    }
+
+    for (const [bundleKey, group] of bundleGroups.entries()) {
+      const anchor = bundleAnchorByKey.get(bundleKey);
+      const junction = bundleJunctionByKey.get(bundleKey);
+      if (!anchor || !junction || group.length === 0) {
+        continue;
+      }
+
+      const sample = group[0].item;
+      const avgStroke = group.reduce((sum, candidate) => sum + candidate.item.strokeWidth, 0) / group.length;
+      const trunkWidth = assignBundleThickness(sample.links, avgStroke, group.length);
+      const trunk: PurpleHybridTrunkItem = {
+        key: `purple-trunk:${bundleKey}`,
+        pathD: `M ${anchor.x} ${anchor.y} L ${junction.x} ${junction.y}`,
+        className: `edge ${sample.edgeTypeClass} ${sample.dirClass} ${sample.faded ? 'edge-dim' : ''}`,
+        strokeWidth: trunkWidth,
+        opacity: sample.faded ? dimmedEdgeOpacity : undefined,
+        faded: sample.faded,
+      };
+
+      if (sample.faded) {
+        fadedTrunks.push(trunk);
+      } else {
+        emphasizedTrunks.push(trunk);
+      }
+
+      for (const candidate of group) {
+        hints.set(candidate.item.key, {
+          pivotX: anchor.x,
+          pivotY: anchor.y,
+          junctionX: junction.x,
+          junctionY: junction.y,
+          outgoingFromPivot: candidate.outgoingFromPivot,
+        });
+      }
+    }
+
+    return { hints, fadedTrunks, emphasizedTrunks };
+  }, [
+    useSugiyamaLocalLayout,
+    sugiyamaPivotNodeId,
+    detailLayoutMode,
+    nodeMap,
+    nodeSizes,
+    edgeRenderItems,
+    sugiyamaInOutNeighborIds,
+    dimmedEdgeOpacity,
+  ]);
 
   const edgeLabelPositions = useMemo(() => {
     const lineHeight = 13;
@@ -2070,7 +2231,7 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
     const labelHeight = Math.max(18, item.labelLines.length * lineHeight + 8);
     const labelTop = labelY - labelHeight / 2;
 
-    const pathD =
+    const defaultPathD =
       routingMode === 'manhattan'
         ? manhattanEdgePath(
             item.source,
@@ -2112,6 +2273,37 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
             forcedPortSides.source,
             forcedPortSides.target
           );
+
+    const purpleHint = purpleHybridState.hints.get(item.key);
+    const pathD = (() => {
+      if (!purpleHint) {
+        return defaultPathD;
+      }
+      const tailLength = 34;
+      if (purpleHint.outgoingFromPivot) {
+        const endDx = tx - purpleHint.junctionX;
+        const endDy = ty - purpleHint.junctionY;
+        const endLen = Math.hypot(endDx, endDy) || 1;
+        const ux = endDx / endLen;
+        const uy = endDy / endLen;
+        const c1x = purpleHint.junctionX + ux * Math.min(48, endLen * 0.38);
+        const c1y = purpleHint.junctionY + uy * Math.min(48, endLen * 0.38);
+        const c2x = tx - ux * Math.min(tailLength, endLen * 0.35);
+        const c2y = ty - uy * Math.min(tailLength, endLen * 0.35);
+        return `M ${purpleHint.pivotX} ${purpleHint.pivotY} L ${purpleHint.junctionX} ${purpleHint.junctionY} C ${c1x} ${c1y}, ${c2x} ${c2y}, ${tx} ${ty}`;
+      }
+
+      const startDx = purpleHint.junctionX - sx;
+      const startDy = purpleHint.junctionY - sy;
+      const startLen = Math.hypot(startDx, startDy) || 1;
+      const ux = startDx / startLen;
+      const uy = startDy / startLen;
+      const c1x = sx + ux * Math.min(tailLength, startLen * 0.35);
+      const c1y = sy + uy * Math.min(tailLength, startLen * 0.35);
+      const c2x = purpleHint.junctionX - ux * Math.min(48, startLen * 0.38);
+      const c2y = purpleHint.junctionY - uy * Math.min(48, startLen * 0.38);
+      return `M ${sx} ${sy} C ${c1x} ${c1y}, ${c2x} ${c2y}, ${purpleHint.junctionX} ${purpleHint.junctionY} L ${purpleHint.pivotX} ${purpleHint.pivotY}`;
+    })();
 
     const jumpPoints = manhattanLineJumps.get(item.key) ?? [];
     const jumpArcPath = jumpPointsToPath(jumpPoints, 6, 7);
@@ -2177,6 +2369,20 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
     );
   }
 
+  function renderPurpleHybridTrunk(item: PurpleHybridTrunkItem) {
+    return (
+      <path
+        key={item.key}
+        d={item.pathD}
+        className={item.className}
+        style={{ strokeWidth: item.strokeWidth, opacity: item.opacity }}
+        fill="none"
+        strokeLinecap="round"
+        pointerEvents="none"
+      />
+    );
+  }
+
   function resolveSugiyamaInOutNeighborPortSides(item: EdgeRenderItem): { source: NodeSide | null; target: NodeSide | null } {
     if (!useSugiyamaLocalLayout || !sugiyamaPivotNodeId || sugiyamaInOutNeighborIds.size === 0) {
       return { source: null, target: null };
@@ -2189,18 +2395,26 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
 
     const pivotSize = nodeSizes.get(pivotNode.id);
     const pivotCenterX = pivotNode.x + (pivotSize?.width ?? 190) / 2;
-    const neighborSideByHalfPlane = (neighbor: SimNode): NodeSide => {
+    const neighborSideTowardSelected = (neighbor: SimNode): NodeSide => {
       const neighborSize = nodeSizes.get(neighbor.id);
       const neighborCenterX = neighbor.x + (neighborSize?.width ?? 190) / 2;
-      // Flip mapping: left half uses right port; right half uses left port.
+      // Keep neighbor port horizontal and facing the selected node.
       return neighborCenterX < pivotCenterX ? 'right' : 'left';
     };
 
     if (item.source.id === sugiyamaPivotNodeId && sugiyamaInOutNeighborIds.has(item.target.id)) {
-      return { source: null, target: neighborSideByHalfPlane(item.target) };
+      return {
+        // Keep selected node on default routing side (top/bottom in this layout).
+        source: null,
+        target: neighborSideTowardSelected(item.target),
+      };
     }
     if (item.target.id === sugiyamaPivotNodeId && sugiyamaInOutNeighborIds.has(item.source.id)) {
-      return { source: neighborSideByHalfPlane(item.source), target: null };
+      return {
+        source: neighborSideTowardSelected(item.source),
+        // Keep selected node on default routing side (top/bottom in this layout).
+        target: null,
+      };
     }
     return { source: null, target: null };
   }
@@ -2366,12 +2580,14 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
             </marker>
           </defs>
           <g transform={transform.toString()}>
+            {purpleHybridState.fadedTrunks.map((item) => renderPurpleHybridTrunk(item))}
             {fadedEdgeItems.map((item) => renderEdge(item, false))}
           </g>
         </svg>
 
          <svg width={canvasWidth} height={canvasHeight} className="edge-layer edge-layer-highlight">
           <g transform={transform.toString()}>
+            {purpleHybridState.emphasizedTrunks.map((item) => renderPurpleHybridTrunk(item))}
             {emphasizedEdgeItems.map((item) => renderEdge(item, true))}
             {groupedLabelState.aggregatedLabels.map((label) => (
               <g className="edge-label-group" key={label.key}>
