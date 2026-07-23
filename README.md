@@ -53,6 +53,39 @@ npm run dev
 
 Open the URL printed by Vite (typically `http://localhost:5173`).
 
+## Layout Engine (Large Graphs)
+
+The header now includes a **Layout** selector:
+
+- `auto`: prefers WebGPU for larger graphs, falls back to CPU if unavailable
+- `webgpu`: forces GPU attempt first, with CPU fallback if browser/device support is missing
+- `cpu`: always uses classic d3-force on CPU
+
+For best results with very large node counts, use a Chromium browser with WebGPU enabled.
+
+## Local Detail Layout
+
+In local context (double-click a node), the toolbar includes a **Detail layout** selector:
+
+- `Force graph`: keeps the current force simulation layout
+- `Sugiyama graph`: centers the selected node, places local inputs on the left, local outputs on the right,
+  and places `inout` nodes top first then bottom with a max-rows-per-column grid
+
+Notes:
+
+- Sugiyama applies only in local detail context
+- If no node is selected, rendering falls back to force placement
+- Manual drag positions are preserved in both modes
+- Edge color classes remain shared across modes (`edge-flow-outgoing`, `edge-flow-incoming`, `edge-flow-bidirectional`)
+
+### Local WebGPU Fork
+
+`d3-force-webgpu` is pinned to a vendored fork at `vendor/d3-force-webgpu` via `file:` dependency.
+
+- GPU stability fixes live in `vendor/d3-force-webgpu/src/gpu/shaders.js`
+- Simulation readback guards live in `vendor/d3-force-webgpu/src/gpu/simulation-gpu.js`
+- After editing the fork, run `npm install` to refresh the linked package in `node_modules`
+
 ## Build
 
 ```zsh

@@ -1,5 +1,7 @@
 export type NodeType = 'application' | 'dataset' | 'table' | 'transformation' | 'cluster';
 export type Directionality = 'source' | 'intermediate' | 'sink';
+export type LayoutEngine = 'auto' | 'cpu' | 'webgpu';
+export type DetailLayoutMode = 'force' | 'sugiyama';
 
 export interface GraphNode {
   id: string;

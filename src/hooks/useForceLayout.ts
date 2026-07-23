@@ -1,11 +1,17 @@
 import { useEffect, useMemo, useState } from 'react';
 import { forceCollide, forceLink, forceManyBody, forceSimulation, forceX, forceY } from 'd3';
-import type { SimLink, SimNode } from '../types/graph';
+import type { LayoutEngine, SimLink, SimNode } from '../types/graph';
 import { getCategoryYPosition } from '../utils/categoryConfig';
 
 interface LayoutResult {
   nodes: SimNode[];
   links: SimLink[];
+}
+
+interface ForceLayoutOptions {
+  isLocalContext?: boolean;
+  localRootNodeId?: string | null;
+  simulationEnabled?: boolean;  // false = freeze after initial layout
 }
 
 export function useForceLayout(
@@ -14,9 +20,17 @@ export function useForceLayout(
   width: number,
   height: number,
   groupOrder: string[],
-  nodeSizes: Map<string, { width: number; height: number }>
+  nodeSizes: Map<string, { width: number; height: number }>,
+  layoutEngine: LayoutEngine = 'auto',
+  options: ForceLayoutOptions = {}
 ): LayoutResult {
   const [layout, setLayout] = useState<LayoutResult>({ nodes, links });
+  const isLocalContext = Boolean(options.isLocalContext && options.localRootNodeId);
+  const localRootNodeId = options.localRootNodeId ?? null;
+  const localRoleMap = useMemo(
+    () => computeLocalRoleMap(links, isLocalContext ? localRootNodeId : null),
+    [links, isLocalContext, localRootNodeId]
+  );
 
   const seededNodes = useMemo(() => {
     const clone = nodes.map((node) => ({ ...node }));
@@ -26,10 +40,27 @@ export function useForceLayout(
     const topY = 48;
     const bottomY = Math.max(topY + 120, height - 48);
 
-    for (const node of clone) {
+    // Compute compact X mapping for local context
+    const localXMapping = isLocalContext && localRootNodeId
+      ? computeLocalXMapping(localRoleMap, localRootNodeId, width)
+      : null;
+
+      for (const node of clone) {
       const nodeDepth = depth.get(node.id) ?? -1;
       node.depth = nodeDepth;
       const normalizedDepth = nodeDepth >= 0 ? nodeDepth / Math.max(1, maxDepth(depth)) : 0.5;
+
+        const localRole = localRoleMap.get(node.id) ?? 'other';
+        if (isLocalContext && localRootNodeId) {
+          // Use compacted X mapping based on which roles actually exist
+          node.x = localXMapping ? localXMapping(node.id, localRole) : width * 0.5;
+          node.fx = null;
+          const categoryYNorm = getCategoryYPosition(node.dominant_category);
+          const categoryY = topY + categoryYNorm * (bottomY - topY);
+          node.y = categoryY;
+          node.fy = null;
+          continue;
+        }
 
       const xByDepth = 80 + normalizedDepth * Math.max(120, width - 160);
       const xByDirectionality =
@@ -64,7 +95,7 @@ export function useForceLayout(
       }
 
       return clone;
-    }, [nodes, links, width, height, groupOrder]);
+    }, [nodes, links, width, height, groupOrder, isLocalContext, localRootNodeId, localRoleMap]);
 
   useEffect(() => {
     if (!seededNodes.length) {
@@ -72,49 +103,140 @@ export function useForceLayout(
       return;
     }
 
-     const size = seededNodes.length;
-     const isLarge = size > 700;
-      const isMedium = size > 260;
-      const tickStride = isLarge ? 5 : isMedium ? 3 : 2;
-      const chargeStrength = isLarge ? -32 : isMedium ? -48 : -60;
-      const alphaDecay = isLarge ? 0.14 : isMedium ? 0.11 : 0.09;
+    const size = seededNodes.length;
+    const isLarge = size > 700;
+    const isMedium = size > 260;
+    const tickStride = isLarge ? 5 : isMedium ? 3 : 2;
+    // In local context, use stronger negative charge to keep nodes closer together
+    const chargeStrength = isLocalContext ? -52 : (isLarge ? -32 : isMedium ? -48 : -60);
+    const alphaDecay = isLocalContext ? 0.12 : (isLarge ? 0.14 : isMedium ? 0.11 : 0.09);
+    const shouldPreferWebGpu = layoutEngine === 'webgpu' || (layoutEngine === 'auto' && size >= 320);
+    let frame = 0;
+    let disposed = false;
+    let hasSimulatedOnce = false;  // Track if we've done initial layout
+    let runningSimulation: { stop: () => void } | null = null;
+    const lastGoodPosition = new Map<string, { x: number; y: number }>();
+    for (const node of seededNodes) {
+      if (Number.isFinite(node.x) && Number.isFinite(node.y)) {
+        lastGoodPosition.set(node.id, { x: node.x, y: node.y });
+      }
+    }
 
-     const linkForce = forceLink<SimNode, SimLink>(links)
-       .id((d) => d.id)
-       .distance((d) => {
-         const base = d.type === 'CALLS' ? 64 : 54;
-         const weight = d.weight ?? 1;
-         return base + Math.min(22, weight * (isLarge ? 1.5 : 2));
-       })
-        .strength(0.15);
+    const publishLayout = () => {
+      let repaired = 0;
+      const nextNodes = seededNodes.map((node) => {
+        const x = sanitizeCoordinate(node.x);
+        const y = sanitizeCoordinate(node.y);
+        const prior = lastGoodPosition.get(node.id);
+        if (x === null || y === null) {
+          repaired += 1;
+        }
+        const safeX = x ?? prior?.x ?? width * 0.5;
+        const safeY = y ?? prior?.y ?? height * 0.5;
+        lastGoodPosition.set(node.id, { x: safeX, y: safeY });
+        return { ...node, x: safeX, y: safeY };
+      });
+      if (repaired > 0) {
+        console.warn(`[useForceLayout] repaired ${repaired} invalid node coordinates (engine=${layoutEngine})`);
+      }
 
-    const simulation = forceSimulation(seededNodes)
-       .force('charge', forceManyBody().strength(chargeStrength))
-       .force('link', linkForce)
-       .force(
-         'collide',
-         forceCollide<SimNode>()
-           .radius((node) => getNodeCollisionRadius(node, nodeSizes))
-           .iterations(isLarge ? 2 : isMedium ? 3 : 4)
-       )
-       .force(
-         'x',
-         forceX<SimNode>((node) => {
+      setLayout({
+        nodes: nextNodes,
+        links
+      });
+    };
+
+    const wireSimulation = (simulation: {
+      on: (event: string, cb: () => void) => unknown;
+      stop: () => void;
+      restart?: () => unknown;
+      gpuReady?: () => Promise<void>;
+    }) => {
+      runningSimulation = simulation;
+      simulation.on('tick', () => {
+        frame += 1;
+        if (frame % tickStride !== 0) {
+          return;
+        }
+        publishLayout();
+      });
+      // After first simulation ends, freeze if simulationEnabled is false
+      simulation.on('end', () => {
+        publishLayout();
+        if (!hasSimulatedOnce) {
+          hasSimulatedOnce = true;
+          // Auto-freeze after initial layout if disabled
+          if (options.simulationEnabled === false) {
+            runningSimulation?.stop();
+          }
+        }
+      });
+    };
+
+    const buildCpuSimulation = () => {
+      const linkForce = forceLink<SimNode, SimLink>(links)
+        .id((d) => d.id)
+        .distance((d) => {
+          const base = d.type === 'CALLS' ? 64 : 54;
+          const weight = d.weight ?? 1;
+          // In local context, use shorter link distances for more compact layout
+          const distMultiplier = isLocalContext ? 1.2 : (isLarge ? 1.5 : 2);
+          return base + Math.min(18, weight * distMultiplier);
+        })
+        .strength((d) => {
+          if (isLocalContext && localRootNodeId && !linkTouchesRoot(d, localRootNodeId)) {
+            // In local context, allow reduced force between non-root nodes for cohesion
+            return 0.12;
+          }
+          // Stronger link forces in local context to pull nodes together
+          return isLocalContext ? 0.35 : 0.15;
+        });
+
+      return forceSimulation(seededNodes)
+        .force('charge', forceManyBody().strength(chargeStrength))
+        .force('link', linkForce)
+        .force(
+          'collide',
+          forceCollide<SimNode>()
+            .radius((node) => getNodeCollisionRadius(node, nodeSizes))
+            .iterations(isLarge ? 2 : isMedium ? 3 : 4)
+        )
+        .force(
+          'x',
+          forceX<SimNode>((node) => {
+            if (isLocalContext && localRootNodeId) {
+              if (node.id === localRootNodeId) {
+                return width * 0.5;
+              }
+              const role = localRoleMap.get(node.id) ?? 'other';
+              // Use compacted X mapping
+              const mapping = computeLocalXMapping(localRoleMap, localRootNodeId, width);
+              return getLocalXTarget(role, width, mapping);
+            }
             const xppr = parseXppr(node.xppr);
             if (xppr !== null) {
               return xpprToX(xppr, 40, Math.max(160, width - 220));
             }
-           const depthWeight = node.depth !== undefined && node.depth >= 0 ? node.depth / Math.max(1, maxDepthFromNodes(seededNodes)) : 0.5;
-           const depthX = 70 + depthWeight * Math.max(120, width - 140);
-           const directionalX =
-             node.directionality === 'source'
-               ? width * 0.14
-               : node.directionality === 'sink'
-                 ? width * 0.86
-                 : width * 0.5;
-           return 0.65 * depthX + 0.35 * directionalX;
-           }).strength((node) => (parseXppr(node.xppr) !== null ? 0.94 : 0.32))
-       )
+            const depthWeight = node.depth !== undefined && node.depth >= 0 ? node.depth / Math.max(1, maxDepthFromNodes(seededNodes)) : 0.5;
+            const depthX = 70 + depthWeight * Math.max(120, width - 140);
+            const directionalX =
+              node.directionality === 'source'
+                ? width * 0.14
+                : node.directionality === 'sink'
+                  ? width * 0.86
+                  : width * 0.5;
+            return 0.65 * depthX + 0.35 * directionalX;
+          }).strength((node) => {
+            if (isLocalContext && localRootNodeId) {
+              if (node.id === localRootNodeId) {
+                return 0.72;  // Reduced from 0.95 to allow more natural spreading
+              }
+              const role = localRoleMap.get(node.id) ?? 'other';
+              return role === 'in' || role === 'out' ? 0.64 : 0.15;  // Reduced from 0.86/0.18
+            }
+            return parseXppr(node.xppr) !== null ? 0.94 : 0.32;
+          })
+        )
         .force(
           'y',
           forceY<SimNode>((node) => {
@@ -122,35 +244,162 @@ export function useForceLayout(
             const topBound = 48;
             const bottomBound = Math.max(168, height - 48);
             return topBound + categoryYNorm * (bottomBound - topBound);
-          }).strength(() => 0.22)
-          )
-         .alpha(0.6)
-         .alphaDecay(alphaDecay)
-          .velocityDecay(0.4);
+          }).strength(() => isLocalContext ? 0.16 : 0.22)
+        )
+        .alpha(0.6)
+        .alphaDecay(alphaDecay)
+        .velocityDecay(0.4);
+    };
 
-        let frame = 0;
-        simulation.on('tick', () => {
-      frame += 1;
-      if (frame % tickStride !== 0) {
+    const startCpu = () => {
+      if (disposed) {
         return;
       }
-      setLayout({
-        nodes: seededNodes.map((n) => ({ ...n })),
-        links
-      });
-    });
+      const simulation = buildCpuSimulation();
+      wireSimulation(simulation);
+    };
 
-    simulation.on('end', () => {
-      setLayout({
-        nodes: seededNodes.map((n) => ({ ...n })),
-        links
-      });
-    });
+    const startWebGpu = async () => {
+      try {
+        const webGpuForces = await import('d3-force-webgpu');
+        if (disposed) {
+          return;
+        }
 
-      return () => {
-        simulation.stop();
-      };
-    }, [seededNodes, links, width, height, groupOrder, nodeSizes]);
+        const gpuSupported =
+          typeof webGpuForces.checkWebGPUSupport === 'function'
+            ? await webGpuForces.checkWebGPUSupport()
+            : typeof navigator !== 'undefined' && 'gpu' in navigator;
+
+        if (!gpuSupported) {
+          if (layoutEngine === 'webgpu') {
+            console.warn('WebGPU requested but unavailable. Falling back to CPU simulation.');
+          }
+          startCpu();
+          return;
+        }
+
+
+        const linkForce = webGpuForces
+          .forceLink(links)
+          .id((d: SimNode) => d.id)
+          .distance((d: SimLink) => {
+            const base = d.type === 'CALLS' ? 64 : 54;
+            const weight = d.weight ?? 1;
+            // In local context, use shorter link distances for more compact layout
+            const distMultiplier = isLocalContext ? 1.2 : (isLarge ? 1.5 : 2);
+            return base + Math.min(18, weight * distMultiplier);
+          })
+          .strength((d: SimLink) => {
+            if (isLocalContext && localRootNodeId && !linkTouchesRoot(d, localRootNodeId)) {
+              // In local context, allow reduced force between non-root nodes for cohesion
+              return 0.12;
+            }
+            // Stronger link forces in local context to pull nodes together
+            return isLocalContext ? 0.35 : 0.15;
+          });
+
+        const simulation = webGpuForces
+          .forceSimulationGPU(seededNodes)
+          .force('charge', webGpuForces.forceManyBody().strength(chargeStrength))
+          .force('link', linkForce)
+          .force(
+            'collide',
+            webGpuForces
+              .forceCollide()
+              .radius((node: SimNode) => getNodeCollisionRadius(node, nodeSizes))
+              .iterations(isLarge ? 2 : isMedium ? 3 : 4)
+          )
+          .force(
+            'x',
+            webGpuForces.forceX((node: SimNode) => {
+              if (isLocalContext && localRootNodeId) {
+                if (node.id === localRootNodeId) {
+                  return width * 0.5;
+                }
+                const role = localRoleMap.get(node.id) ?? 'other';
+                // Use compacted X mapping
+                const mapping = computeLocalXMapping(localRoleMap, localRootNodeId, width);
+                return getLocalXTarget(role, width, mapping);
+              }
+              const xppr = parseXppr(node.xppr);
+              if (xppr !== null) {
+                return xpprToX(xppr, 40, Math.max(160, width - 220));
+              }
+              const depthWeight = node.depth !== undefined && node.depth >= 0 ? node.depth / Math.max(1, maxDepthFromNodes(seededNodes)) : 0.5;
+              const depthX = 70 + depthWeight * Math.max(120, width - 140);
+              const directionalX =
+                node.directionality === 'source'
+                  ? width * 0.14
+                  : node.directionality === 'sink'
+                    ? width * 0.86
+                    : width * 0.5;
+              return 0.65 * depthX + 0.35 * directionalX;
+            }).strength((node: SimNode) => {
+              if (isLocalContext && localRootNodeId) {
+                if (node.id === localRootNodeId) {
+                  return 0.72;  // Reduced from 0.95 to allow more natural spreading
+                }
+                const role = localRoleMap.get(node.id) ?? 'other';
+                return role === 'in' || role === 'out' ? 0.64 : 0.15;  // Reduced from 0.86/0.18
+              }
+              return parseXppr(node.xppr) !== null ? 0.94 : 0.32;
+            })
+          )
+          .force(
+            'y',
+            webGpuForces
+              .forceY((node: SimNode) => {
+                const categoryYNorm = getCategoryYPosition(node.dominant_category);
+                const topBound = 48;
+                const bottomBound = Math.max(168, height - 48);
+                return topBound + categoryYNorm * (bottomBound - topBound);
+              })
+              .strength(() => isLocalContext ? 0.16 : 0.22)
+          )
+          .alphaDecay(alphaDecay)
+          .velocityDecay(0.4);
+
+        // Wait for GPU to initialize before wiring event listeners
+        if (typeof simulation.gpuReady === 'function') {
+          await simulation.gpuReady();
+        }
+        if (disposed) {
+          simulation.stop();
+          return;
+        }
+        // Wire simulation AFTER GPU is ready, so ticks are properly emitted
+        wireSimulation(simulation);
+        // NOW start the simulation with alpha - after listeners are wired
+        simulation.alpha(0.6);
+      } catch (error) {
+        console.warn('Unable to initialize d3-force-webgpu, using CPU simulation instead.', error);
+        startCpu();
+      }
+    };
+
+    if (shouldPreferWebGpu) {
+      void startWebGpu();
+    } else {
+      startCpu();
+    }
+
+    return () => {
+      disposed = true;
+      runningSimulation?.stop();
+    };
+  }, [
+    seededNodes,
+    links,
+    width,
+    height,
+    groupOrder,
+    nodeSizes,
+    layoutEngine,
+    isLocalContext,
+    localRootNodeId,
+    localRoleMap
+  ]);
 
 
     return layout;
@@ -247,6 +496,17 @@ function yclusterToY(ycluster: number, topY: number, bottomY: number): number {
   return topY + (1 - ycluster) * Math.max(0, bottomY - topY);
 }
 
+function sanitizeCoordinate(value: number | undefined): number | null {
+  if (value === undefined || !Number.isFinite(value)) {
+    return null;
+  }
+  // Reject extreme coordinates that can push the whole graph off-canvas.
+  if (Math.abs(value) > 1_000_000) {
+    return null;
+  }
+  return value;
+}
+
 function getNodeCollisionRadius(node: SimNode, nodeSizes: Map<string, { width: number; height: number }>) {
   const measured = nodeSizes.get(node.id);
   const fallbackWidth = node.isCluster ? 220 : 190;
@@ -255,5 +515,99 @@ function getNodeCollisionRadius(node: SimNode, nodeSizes: Map<string, { width: n
   const height = measured?.height ?? fallbackHeight;
   const padding = node.isCluster ? 18 : 12;
   return Math.hypot(width, height) / 2 + padding;
+}
+
+function linkTouchesRoot(link: SimLink, rootNodeId: string) {
+  const src = typeof link.source === 'string' ? link.source : link.source.id;
+  const dst = typeof link.target === 'string' ? link.target : link.target.id;
+  return src === rootNodeId || dst === rootNodeId;
+}
+
+function computeLocalRoleMap(links: SimLink[], localRootNodeId: string | null) {
+  const roles = new Map<string, 'in' | 'out' | 'both' | 'other'>();
+  if (!localRootNodeId) {
+    return roles;
+  }
+  const incoming = new Set<string>();
+  const outgoing = new Set<string>();
+  for (const link of links) {
+    const src = typeof link.source === 'string' ? link.source : link.source.id;
+    const dst = typeof link.target === 'string' ? link.target : link.target.id;
+    if (dst === localRootNodeId && src !== localRootNodeId) {
+      incoming.add(src);
+    }
+    if (src === localRootNodeId && dst !== localRootNodeId) {
+      outgoing.add(dst);
+    }
+  }
+
+  for (const nodeId of incoming) {
+    roles.set(nodeId, outgoing.has(nodeId) ? 'both' : 'in');
+  }
+  for (const nodeId of outgoing) {
+    if (!roles.has(nodeId)) {
+      roles.set(nodeId, 'out');
+    }
+  }
+
+  return roles;
+}
+
+function computeLocalXMapping(
+  localRoleMap: Map<string, 'in' | 'out' | 'both' | 'other'>,
+  localRootNodeId: string,
+  width: number
+): (nodeId: string, role: 'in' | 'out' | 'both' | 'other') => number {
+  // Detect which role groups actually exist in the local subgraph
+  const hasIncoming = Array.from(localRoleMap.values()).some((role) => role === 'in' || role === 'both');
+  const hasOutgoing = Array.from(localRoleMap.values()).some((role) => role === 'out' || role === 'both');
+
+  // Assign X targets based on which ranks are occupied
+  const rankCount = (hasIncoming ? 1 : 0) + 1 + (hasOutgoing ? 1 : 0);  // incoming, center, outgoing
+  const padding = Math.max(40, width * 0.08);  // Minimum padding on sides
+  const availableWidth = width - padding * 2;
+  const rankWidth = availableWidth / Math.max(1, rankCount - 1 || 1);
+
+  return (nodeId: string, role: 'in' | 'out' | 'both' | 'other'): number => {
+    if (nodeId === localRootNodeId) {
+      // Root always centered
+      return width * 0.5;
+    }
+
+    let xPos = width * 0.5;
+    if (role === 'in' || role === 'both') {
+      if (hasOutgoing) {
+        // Incoming is at left third
+        xPos = padding + rankWidth * 0;
+      } else {
+        // Only incoming: put at left-center
+        xPos = padding + availableWidth * 0.33;
+      }
+    } else if (role === 'out') {
+      if (hasIncoming) {
+        // Outgoing is at right third
+        xPos = width - padding - rankWidth * 0;
+      } else {
+        // Only outgoing: put at right-center
+        xPos = width - padding - availableWidth * 0.33;
+      }
+    } else {
+      // Ambiguous/other: stay centered
+      xPos = width * 0.5;
+    }
+    return xPos;
+  };
+}
+
+function getLocalXTarget(
+  role: 'in' | 'out' | 'both' | 'other',
+  width: number,
+  mapping: ((nodeId: string, role: 'in' | 'out' | 'both' | 'other') => number) | null
+): number {
+  if (!mapping) {
+    return width * 0.5;
+  }
+  // Use a dummy nodeId since role is what matters for the target
+  return mapping('', role);
 }
 
