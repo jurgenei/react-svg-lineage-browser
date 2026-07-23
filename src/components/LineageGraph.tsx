@@ -86,6 +86,7 @@ interface GraphUiPrefs {
   selectedNodeId: string | null;
   toolbarPosition: 'top' | 'bottom' | 'left' | 'right';
   detailLayoutMode: DetailLayoutMode;
+  tableSearchHistory: string[];
 }
 
 type PanelName = 'help' | 'legend';
@@ -99,6 +100,7 @@ interface DragPanelState {
 }
 
 const GRAPH_UI_PREFS_KEY = 'lineage.exploring.graphUiPrefs.v1';
+const MAX_TABLE_SEARCH_HISTORY = 6;
 
 const OCTOLINEAR_PRIMARY_OFFSETS = [0, 24, -24, 48, -48];
 const OCTOLINEAR_SECONDARY_OFFSETS = [72, -72, 96, -96];
@@ -135,6 +137,17 @@ function readStoredTransform(value: unknown): ZoomTransform {
   return zoomIdentity.translate(x, y).scale(k);
 }
 
+function sanitizeSearchHistory(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .filter((item): item is string => typeof item === 'string')
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .slice(0, MAX_TABLE_SEARCH_HISTORY);
+}
+
 function isIdentityTransform(t: ZoomTransform): boolean {
   return Math.abs(t.x) < 1e-6 && Math.abs(t.y) < 1e-6 && Math.abs(t.k - 1) < 1e-6;
 }
@@ -167,6 +180,10 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
    const [legendPanelPos, setLegendPanelPos] = useState<{ x: number; y: number }>(() => initialPrefs.legendPanelPos ?? { x: 10, y: 10 });
    const [transform, setTransform] = useState<ZoomTransform>(() => readStoredTransform(initialPrefs.cameraTransform));
    const [searchTerm, setSearchTerm] = useState('');
+   const [tableSearchHistory, setTableSearchHistory] = useState<string[]>(() =>
+     sanitizeSearchHistory(initialPrefs.tableSearchHistory)
+   );
+   const [showSearchHistory, setShowSearchHistory] = useState(false);
    const [tableMatches, setTableMatches] = useState<string[]>([]);
    const [tableMatchIndex, setTableMatchIndex] = useState(-1);
    const [pendingFocusId, setPendingFocusId] = useState<string | null>(null);
@@ -190,6 +207,7 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
   const nodeElementsRef = useRef<Map<string, HTMLButtonElement>>(new Map());
   const nodeObserversRef = useRef<Map<string, ResizeObserver>>(new Map());
   const nodeRefCallbacksRef = useRef<Map<string, (element: HTMLButtonElement | null) => void>>(new Map());
+   const tableSearchFieldRef = useRef<HTMLDivElement | null>(null);
    const preLocalTransformRef = useRef<ZoomTransform | null>(null);
    const pendingFocusDurationRef = useRef(280);
    const pendingFocusScaleRef = useRef<number | null>(null);
@@ -1650,14 +1668,33 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
         cameraTransform: { x: transform.x, y: transform.y, k: transform.k },
         selectedNodeId,
         toolbarPosition,
-        detailLayoutMode
+        detailLayoutMode,
+        tableSearchHistory,
       };
       try {
         window.localStorage.setItem(GRAPH_UI_PREFS_KEY, JSON.stringify(prefs));
       } catch {
         // Ignore storage quota/privacy mode errors and keep UI responsive.
       }
-    }, [focusDimStrength, autoZoomEnabled, showDirectEdges, orthogonalPorts, routingMode, edgeMode, showHelpPanel, showLegendPanel, helpPanelPos, legendPanelPos, transform, selectedNodeId, toolbarPosition, detailLayoutMode]);
+    }, [focusDimStrength, autoZoomEnabled, showDirectEdges, orthogonalPorts, routingMode, edgeMode, showHelpPanel, showLegendPanel, helpPanelPos, legendPanelPos, transform, selectedNodeId, toolbarPosition, detailLayoutMode, tableSearchHistory]);
+
+  useEffect(() => {
+    if (!showSearchHistory) {
+      return;
+    }
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node)) {
+        return;
+      }
+      if (tableSearchFieldRef.current?.contains(target)) {
+        return;
+      }
+      setShowSearchHistory(false);
+    };
+    window.addEventListener('pointerdown', onPointerDown);
+    return () => window.removeEventListener('pointerdown', onPointerDown);
+  }, [showSearchHistory]);
 
   useEffect(() => {
     if (!dragPanelState) {
@@ -1944,13 +1981,27 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
       ? 'no table matches'
       : '';
 
-  function runSearch(resetToFirst: boolean) {
-    const q = searchTerm.trim().toLowerCase();
+  function rememberTableSearch(term: string) {
+    const normalizedTerm = term.trim();
+    if (!normalizedTerm) {
+      return;
+    }
+    setTableSearchHistory((prev) => {
+      const deduped = prev.filter((item) => item.toLowerCase() !== normalizedTerm.toLowerCase());
+      return [normalizedTerm, ...deduped].slice(0, MAX_TABLE_SEARCH_HISTORY);
+    });
+  }
+
+  function runSearch(resetToFirst: boolean, explicitTerm?: string) {
+    const source = explicitTerm ?? searchTerm;
+    const q = source.trim().toLowerCase();
     if (!q) {
       setTableMatches([]);
       setTableMatchIndex(-1);
       return;
     }
+
+    rememberTableSearch(source);
 
     const matches = data.nodes
       .filter((n) => n.type === 'table' && n.label.toLowerCase().includes(q))
@@ -1987,6 +2038,12 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
       });
     }
     setPendingFocusId(nodeId);
+  }
+
+  function selectFromSearchHistory(term: string) {
+    setSearchTerm(term);
+    setShowSearchHistory(false);
+    runSearch(true, term);
   }
 
    function panToWorldPoint(worldX: number, worldY: number, zoomScale: number, duration = 280) {
@@ -2551,26 +2608,48 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
              <span>{focusDimStrength}%</span>
            </label>
 
-           <label className="label-inline">
-             Table search:
-             <input
-               type="text"
-               value={searchTerm}
-               placeholder="table name..."
-               onChange={(e) => setSearchTerm(e.target.value)}
-               onKeyDown={(e) => {
-                 if (e.key === 'Enter') {
-                   e.preventDefault();
-                   runSearch(true);
-                   return;
-                 }
-                 if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
-                   e.preventDefault();
-                   cycleSearch(e.key === 'ArrowRight' ? 1 : -1);
-                 }
-               }}
-             />
-           </label>
+           <div className="table-search-field" ref={tableSearchFieldRef}>
+             <label className="label-inline">
+               Table search:
+               <input
+                 type="text"
+                 value={searchTerm}
+                 placeholder="table name..."
+                 onFocus={() => setShowSearchHistory(true)}
+                 onChange={(e) => {
+                   setSearchTerm(e.target.value);
+                   setShowSearchHistory(true);
+                 }}
+                 onKeyDown={(e) => {
+                   if (e.key === 'Enter') {
+                     e.preventDefault();
+                     runSearch(true);
+                     setShowSearchHistory(false);
+                     return;
+                   }
+                   if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+                     e.preventDefault();
+                     cycleSearch(e.key === 'ArrowRight' ? 1 : -1);
+                   }
+                 }}
+               />
+             </label>
+             {showSearchHistory && tableSearchHistory.length > 0 && (
+               <div className="table-search-history-dropdown">
+                 {tableSearchHistory.map((term) => (
+                   <button
+                     key={term}
+                     type="button"
+                     className="table-search-history-item"
+                     onMouseDown={(event) => event.preventDefault()}
+                     onClick={() => selectFromSearchHistory(term)}
+                   >
+                     {term}
+                   </button>
+                 ))}
+               </div>
+             )}
+           </div>
            <span className="search-stats">{searchResultsText}</span>
 
            {selectedNodeId ? <span className="selected-label">Selected: {selectedNodeId}</span> : null}

@@ -318,6 +318,41 @@ body {
    margin-left: 6px;
 }
 
+.table-search-field {
+  position: relative;
+}
+
+.table-search-history-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 100%;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 6px 16px var(--overlay-shadow);
+}
+
+.table-search-history-item {
+  text-align: left;
+  white-space: nowrap;
+}
+
+.toolbar-left .table-search-field,
+.toolbar-right .table-search-field {
+  width: 100%;
+}
+
+.toolbar-left .table-search-history-dropdown,
+.toolbar-right .table-search-history-dropdown {
+  min-width: 100%;
+}
+
 .toolbar button {
    border: 1px solid var(--border-subtle);
    background: var(--surface);
