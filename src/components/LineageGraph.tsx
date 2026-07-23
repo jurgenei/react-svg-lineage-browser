@@ -87,6 +87,8 @@ interface GraphUiPrefs {
   toolbarPosition: 'top' | 'bottom' | 'left' | 'right';
   detailLayoutMode: DetailLayoutMode;
   tableSearchHistory: string[];
+  searchTerm: string;
+  collapsedGroups: string[];
 }
 
 type PanelName = 'help' | 'legend';
@@ -148,6 +150,13 @@ function sanitizeSearchHistory(value: unknown): string[] {
     .slice(0, MAX_TABLE_SEARCH_HISTORY);
 }
 
+function sanitizeStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.filter((item): item is string => typeof item === 'string').map((item) => item.trim()).filter(Boolean);
+}
+
 function isIdentityTransform(t: ZoomTransform): boolean {
   return Math.abs(t.x) < 1e-6 && Math.abs(t.y) < 1e-6 && Math.abs(t.k - 1) < 1e-6;
 }
@@ -159,7 +168,10 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
   }
   const initialPrefs = initialPrefsRef.current;
 
-   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => new Set(defaultCollapsedGroups(data)));
+   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => {
+     const stored = sanitizeStringArray(initialPrefs.collapsedGroups);
+     return new Set(stored.length ? stored : defaultCollapsedGroups(data));
+   });
    const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
    const [selectedNodeId, setSelectedNodeId] = useState<string | null>(initialPrefs.selectedNodeId ?? null);
    const [focusDimStrength, setFocusDimStrength] = useState(() => {
@@ -179,7 +191,9 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
    const [helpPanelPos, setHelpPanelPos] = useState<{ x: number; y: number }>(() => initialPrefs.helpPanelPos ?? { x: Math.max(10, width - 250), y: 10 });
    const [legendPanelPos, setLegendPanelPos] = useState<{ x: number; y: number }>(() => initialPrefs.legendPanelPos ?? { x: 10, y: 10 });
    const [transform, setTransform] = useState<ZoomTransform>(() => readStoredTransform(initialPrefs.cameraTransform));
-   const [searchTerm, setSearchTerm] = useState('');
+   const [searchTerm, setSearchTerm] = useState(() =>
+     typeof initialPrefs.searchTerm === 'string' ? initialPrefs.searchTerm : ''
+   );
    const [tableSearchHistory, setTableSearchHistory] = useState<string[]>(() =>
      sanitizeSearchHistory(initialPrefs.tableSearchHistory)
    );
@@ -208,6 +222,7 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
   const nodeObserversRef = useRef<Map<string, ResizeObserver>>(new Map());
   const nodeRefCallbacksRef = useRef<Map<string, (element: HTMLButtonElement | null) => void>>(new Map());
    const tableSearchFieldRef = useRef<HTMLDivElement | null>(null);
+   const pendingSearchAfterExitRef = useRef<string | null>(null);
    const preLocalTransformRef = useRef<ZoomTransform | null>(null);
    const pendingFocusDurationRef = useRef(280);
    const pendingFocusScaleRef = useRef<number | null>(null);
@@ -1670,13 +1685,15 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
         toolbarPosition,
         detailLayoutMode,
         tableSearchHistory,
+        searchTerm,
+        collapsedGroups: Array.from(collapsedGroups),
       };
       try {
         window.localStorage.setItem(GRAPH_UI_PREFS_KEY, JSON.stringify(prefs));
       } catch {
         // Ignore storage quota/privacy mode errors and keep UI responsive.
       }
-    }, [focusDimStrength, autoZoomEnabled, showDirectEdges, orthogonalPorts, routingMode, edgeMode, showHelpPanel, showLegendPanel, helpPanelPos, legendPanelPos, transform, selectedNodeId, toolbarPosition, detailLayoutMode, tableSearchHistory]);
+    }, [focusDimStrength, autoZoomEnabled, showDirectEdges, orthogonalPorts, routingMode, edgeMode, showHelpPanel, showLegendPanel, helpPanelPos, legendPanelPos, transform, selectedNodeId, toolbarPosition, detailLayoutMode, tableSearchHistory, searchTerm, collapsedGroups]);
 
   useEffect(() => {
     if (!showSearchHistory) {
@@ -2043,8 +2060,25 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
   function selectFromSearchHistory(term: string) {
     setSearchTerm(term);
     setShowSearchHistory(false);
+    if (isLocalContext) {
+      pendingSearchAfterExitRef.current = term;
+      exitLocalContext();
+      return;
+    }
     runSearch(true, term);
   }
+
+  useEffect(() => {
+    if (isLocalContext) {
+      return;
+    }
+    const pendingTerm = pendingSearchAfterExitRef.current;
+    if (!pendingTerm) {
+      return;
+    }
+    pendingSearchAfterExitRef.current = null;
+    runSearch(true, pendingTerm);
+  }, [isLocalContext]);
 
    function panToWorldPoint(worldX: number, worldY: number, zoomScale: number, duration = 280) {
      if (!svgRef.current || !zoomBehaviorRef.current) {
