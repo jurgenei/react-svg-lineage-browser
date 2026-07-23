@@ -2534,95 +2534,106 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
    };
 
    return (
-      <div className={`graph-shell graph-shell-toolbar-${toolbarPosition}`}>
-        <div className={`toolbar toolbar-${toolbarPosition}`}>
-          <button onClick={cycleToolbarPosition} title="Cycle toolbar position (Top → Bottom → Left → Right)">⇄</button>
-          <button onClick={() => setCollapsedGroups(new Set(groupOrder))}>Collapse all groups</button>
-          <button onClick={() => setCollapsedGroups(new Set())}>Expand all groups</button>
-         <label>
-           Dim strength
-           <input
-             type="range"
-             min={0}
-             max={100}
-             step={1}
-             value={focusDimStrength}
-             onChange={(e) => setFocusDimStrength(Number(e.target.value))}
-           />
-           <span>{focusDimStrength}%</span>
-         </label>
-         <label>
-           <input type="checkbox" checked={showDirectEdges} onChange={(e) => setShowDirectEdges(e.target.checked)} />
-           Show direct edges
-         </label>
-          <label>
-            <input type="checkbox" checked={autoZoomEnabled} onChange={(e) => setAutoZoomEnabled(e.target.checked)} />
-            Auto zoom
-          </label>
-        <label>
-          <input
-            type="checkbox"
-            checked={orthogonalPorts}
-            onChange={(e) => setOrthogonalPorts(e.target.checked)}
-          />
-          Perpendicular box ports
-        </label>
-        <label>
-          Routing:
-          <select value={routingMode} onChange={(e) => setRoutingMode(e.target.value as 'smooth' | 'manhattan' | 'octolinear')}>
-            <option value="smooth">smooth</option>
-            <option value="manhattan">manhattan</option>
-            <option value="octolinear">octolinear</option>
-          </select>
-        </label>
-        {isLocalContext && (
-          <label>
-            Detail layout:
-            <select value={detailLayoutMode} onChange={(e) => setDetailLayoutMode(e.target.value as DetailLayoutMode)}>
-              <option value="force">Force graph</option>
-              <option value="sugiyama">Sugiyama graph</option>
-            </select>
-          </label>
-        )}
-         <button onClick={resetZoomView}>Reset zoom</button>
-        <button onClick={() => setShowLegendPanel((v) => !v)}>{showLegendPanel ? 'Hide legend' : 'Show legend'}</button>
-        <button onClick={() => setShowHelpPanel((v) => !v)}>{showHelpPanel ? 'Hide help' : 'Show help'}</button>
-        <label>
-          Table search:
-          <input
-            value={searchTerm}
-            placeholder="table name..."
-            onChange={(e) => setSearchTerm(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                e.preventDefault();
-                runSearch(true);
-                return;
-              }
-                if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
-                e.preventDefault();
-                  cycleSearch(e.key === 'ArrowRight' ? 1 : -1);
-              }
-            }}
-          />
-        </label>
-        <span className="search-stats">{searchResultsText}</span>
-        <label>
-          Edge mode:
-          <select value={edgeMode} onChange={(e) => setEdgeMode(e.target.value as 'none' | 'soft' | 'grouped')}>
-            <option value="none">none</option>
-            <option value="soft">soft bundle</option>
-            <option value="grouped">grouped bundle</option>
-          </select>
-         </label>
-         <span className="render-stats">
-          render {renderNodes.length}/{nodes.length} nodes, {renderLinks.length}/{links.length} links
-        </span>
-        {isLocalContext && localRootNodeLabel ? (
-          <span className="local-context-chip">Local: {localRootNodeLabel} (Esc/canvas to exit)</span>
-        ) : null}
-        {selectedNodeId ? <span className="selected-label">Selected: {selectedNodeId}</span> : null}
-      </div>
+       <div className={`graph-shell graph-shell-toolbar-${toolbarPosition}`}>
+         <div className={`toolbar toolbar-${toolbarPosition}`}>
+           <button onClick={cycleToolbarPosition} title="Cycle toolbar position (Top → Bottom → Left → Right)">⇄</button>
+           
+           <label className="label-inline">
+             Dim strength:
+             <input
+               type="range"
+               min={0}
+               max={100}
+               step={1}
+               value={focusDimStrength}
+               onChange={(e) => setFocusDimStrength(Number(e.target.value))}
+             />
+             <span>{focusDimStrength}%</span>
+           </label>
+
+           <label className="label-inline">
+             Table search:
+             <input
+               type="text"
+               value={searchTerm}
+               placeholder="table name..."
+               onChange={(e) => setSearchTerm(e.target.value)}
+               onKeyDown={(e) => {
+                 if (e.key === 'Enter') {
+                   e.preventDefault();
+                   runSearch(true);
+                   return;
+                 }
+                 if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+                   e.preventDefault();
+                   cycleSearch(e.key === 'ArrowRight' ? 1 : -1);
+                 }
+               }}
+             />
+           </label>
+           <span className="search-stats">{searchResultsText}</span>
+
+           {selectedNodeId ? <span className="selected-label">Selected: {selectedNodeId}</span> : null}
+
+           {isLocalContext && localRootNodeLabel ? (
+             <span className="local-context-chip">Local: {localRootNodeLabel} (Esc/canvas to exit)</span>
+           ) : null}
+
+           <label className="label-inline">
+             Routing:
+             <select value={routingMode} onChange={(e) => setRoutingMode(e.target.value as 'smooth' | 'manhattan' | 'octolinear')}>
+               <option value="smooth">smooth</option>
+               <option value="manhattan">manhattan</option>
+               <option value="octolinear">octolinear</option>
+             </select>
+           </label>
+
+           {isLocalContext && (
+             <label className="label-inline">
+               Detail layout:
+               <select value={detailLayoutMode} onChange={(e) => setDetailLayoutMode(e.target.value as DetailLayoutMode)}>
+                 <option value="force">Force graph</option>
+                 <option value="sugiyama">Sugiyama graph</option>
+               </select>
+             </label>
+           )}
+
+           <label className="label-inline">
+             Edge mode:
+             <select value={edgeMode} onChange={(e) => setEdgeMode(e.target.value as 'none' | 'soft' | 'grouped')}>
+               <option value="none">none</option>
+               <option value="soft">soft bundle</option>
+               <option value="grouped">grouped bundle</option>
+             </select>
+           </label>
+
+           <label className="label-inline checkbox">
+             <input type="checkbox" checked={showDirectEdges} onChange={(e) => setShowDirectEdges(e.target.checked)} />
+             Show direct edges
+           </label>
+
+           <label className="label-inline checkbox">
+             <input type="checkbox" checked={autoZoomEnabled} onChange={(e) => setAutoZoomEnabled(e.target.checked)} />
+             Auto zoom
+           </label>
+
+           <label className="label-inline checkbox">
+             <input
+               type="checkbox"
+               checked={orthogonalPorts}
+               onChange={(e) => setOrthogonalPorts(e.target.checked)}
+             />
+             Perpendicular box ports
+           </label>
+
+           <button onClick={() => setCollapsedGroups(new Set(groupOrder))}>Collapse all groups</button>
+           <button onClick={() => setCollapsedGroups(new Set())}>Expand all groups</button>
+           <button onClick={resetZoomView}>Reset zoom</button>
+
+           <span className="render-stats">
+             render {renderNodes.length}/{nodes.length} nodes, {renderLinks.length}/{links.length} links
+           </span>
+         </div>
 
        <div
          ref={scrollViewportRef}
@@ -2658,25 +2669,7 @@ export function LineageGraph({ data, width = 1400, height = 820, layoutEngine = 
                setHoveredNodeId(null);
              }}
            >
-         {showHelpPanel && (
-           <div className="overlay-panel overlay-help" style={{ left: helpPanelPos.x, top: helpPanelPos.y }}>
-             <div className="overlay-panel-drag-handle" onPointerDown={(e) => beginPanelDrag('help', e)}><strong>Shortcuts</strong></div>
-             <div><kbd>Esc</kbd> clear selection</div>
-             <div><kbd>R</kbd> reset zoom</div>
-             <div>Single-click a node to select it. Double-click a node to enter local mode centered on that node.</div>
-             <div>Click canvas to clear current node selection. Use Dim strength slider to control node fading when a node is selected.</div>
-           </div>
-         )}
-        {showLegendPanel && (
-          <div className="overlay-panel overlay-legend" style={{ left: legendPanelPos.x, top: legendPanelPos.y }}>
-            <div className="overlay-panel-drag-handle" onPointerDown={(e) => beginPanelDrag('legend', e)}><strong>Legend</strong></div>
-            <div><span className="legend-dot legend-calls" /> calls</div>
-            <div><span className="legend-dot legend-reads" /> reads</div>
-            <div><span className="legend-dot legend-writes" /> writes</div>
-            <div><span className="legend-dot legend-outgoing" /> outgoing (focus)</div>
-            <div><span className="legend-dot legend-incoming" /> incoming (focus)</div>
-          </div>
-        )}
+
          <svg ref={svgRef} width={canvasWidth} height={canvasHeight} className="edge-layer edge-layer-low">
           <defs>
             <marker id="arrow-start-dot" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="3.5" markerHeight="3.5" orient="auto">

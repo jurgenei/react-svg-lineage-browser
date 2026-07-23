@@ -284,11 +284,38 @@ body {
    width: 100%;
 }
 
+.label-inline {
+   flex-direction: row !important;
+   width: auto !important;
+   align-items: center !important;
+}
+
+.label-inline.checkbox {
+   gap: 4px;
+}
+
+.label-inline input[type='range'] {
+   margin: 0 6px;
+}
+
+.toolbar-left .label-inline,
+.toolbar-right .label-inline {
+   flex-direction: row !important;
+   width: auto !important;
+   margin-top: 0 !important;
+}
+
 .toolbar-left input[type='text'],
 .toolbar-right input[type='text'],
 .toolbar-left select,
 .toolbar-right select {
    width: 100%;
+}
+
+.label-inline input[type='text'],
+.label-inline select {
+   width: auto;
+   margin-left: 6px;
 }
 
 .toolbar button {
