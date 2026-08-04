@@ -348,7 +348,7 @@ body {
   width: 100%;
 }
 
-.toolbar-left .table-search-history-dropdown,
+.toolba1r-left .table-search-history-dropdown,
 .toolbar-right .table-search-history-dropdown {
   min-width: 100%;
 }
@@ -357,7 +357,7 @@ body {
    border: 1px solid var(--border-subtle);
    background: var(--surface);
    color: var(--ing-dark-gray);
-   border-radius: 8px;
+a   border-radius: 8px;
    padding: 6px 10px;
    cursor: pointer;
    font-size: 0.85rem;
